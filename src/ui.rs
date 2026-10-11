@@ -20,9 +20,11 @@ use winapi::um::winuser::{
     AppendMenuW, BeginPaint, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DestroyWindow, DispatchMessageW, DrawTextW, EndPaint, FillRect, GetClientRect,
     GetCursorPos, GetMessageW, InvalidateRect, IsWindowVisible, LoadCursorW, LoadIconW, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, SetProcessDPIAware, SetTimer, ShowWindow, TrackPopupMenu,
-    TranslateMessage, CW_USEDEFAULT, DT_LEFT, DT_SINGLELINE, ICONINFO, IDC_ARROW, IDI_APPLICATION,
+    RegisterClassW, SendMessageW, SetForegroundWindow, SetProcessDPIAware, SetTimer, ShowWindow,
+    TrackPopupMenu, TranslateMessage, CW_USEDEFAULT, DT_LEFT, DT_SINGLELINE, ICONINFO, ICON_BIG,
+    ICON_SMALL, IDC_ARROW, IDI_APPLICATION,
     MF_SEPARATOR, MF_STRING, SW_HIDE, SW_SHOW, TPM_RIGHTALIGN, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+    WM_SETICON,
     WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_USER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
     WS_OVERLAPPED, WS_SYSMENU,
 };
@@ -94,6 +96,8 @@ unsafe fn run_window() {
     window_class.lpszClassName = class.as_ptr();
     window_class.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
     window_class.hbrBackground = CreateSolidBrush(rgb(0x1A, 0x17, 0x14)) as HBRUSH;
+    let icon = app_icon();
+    window_class.hIcon = icon;
     RegisterClassW(&window_class);
 
     let title = wide("Audrix Relay");
@@ -115,7 +119,9 @@ unsafe fn run_window() {
         return;
     }
     ShowWindow(hwnd, SW_SHOW);
-    add_tray(hwnd);
+    SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon as isize);
+    add_tray(hwnd, icon);
     SetTimer(hwnd, 1, 250, None);
     let mut message = std::mem::zeroed();
     while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
@@ -326,11 +332,16 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-unsafe fn add_tray(hwnd: HWND) {
-    let mut icon = make_icon();
+unsafe fn app_icon() -> HICON {
+    let icon = make_icon();
     if icon.is_null() {
-        icon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
+        LoadIconW(std::ptr::null_mut(), IDI_APPLICATION)
+    } else {
+        icon
     }
+}
+
+unsafe fn add_tray(hwnd: HWND, icon: HICON) {
     let mut data: NOTIFYICONDATAW = std::mem::zeroed();
     data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = hwnd;
@@ -409,11 +420,15 @@ unsafe fn make_icon() -> HICON {
             let src = 54 + ((src_row * 128 + src_x) * 4) as usize;
             let dst = (y * 32 + x) * 4;
             if src + 4 <= LOGO.len() {
-                pixels[dst..dst + 4].copy_from_slice(&LOGO[src..src + 4]);
+                pixels[dst] = LOGO[src];
+                pixels[dst + 1] = LOGO[src + 1];
+                pixels[dst + 2] = LOGO[src + 2];
+                pixels[dst + 3] = 255;
             }
         }
     }
-    let mask = CreateBitmap(32, 32, 1, 1, std::ptr::null());
+    let mask_bits = [0u8; 128];
+    let mask = CreateBitmap(32, 32, 1, 1, mask_bits.as_ptr() as *const _);
     let mut icon_info: ICONINFO = std::mem::zeroed();
     icon_info.fIcon = 1;
     icon_info.hbmColor = color;
