@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::io::{BufRead, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -12,15 +13,16 @@ const HEADER_LEN: usize = 10;
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
-        None => capture(),
+        None => prompt_send(),
         Some("send") => match args.next() {
-            None => send(IpAddr::from([127, 0, 0, 1])),
+            None => send(IpAddr::from([127, 0, 0, 1]), Some(PACKETS_TO_SEND)),
             Some(host) => match host.parse::<IpAddr>() {
-                Ok(ip) if args.next().is_none() => send(ip),
+                Ok(ip) if args.next().is_none() => send(ip, Some(PACKETS_TO_SEND)),
                 Ok(_) => Err("send takes only an ip".into()),
                 Err(_) => Err(format!("send expects an ip, got {host}").into()),
             },
         },
+        Some("capture") if args.next().is_none() => capture(),
         Some("recv") if args.next().is_none() => recv(),
         Some("recv") => Err("recv takes no arguments".into()),
         Some(other) => Err(format!("unknown command {other}. use send or recv").into()),
@@ -29,9 +31,32 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
+            if std::env::args().nth(1).is_none() {
+                pause();
+            }
             ExitCode::FAILURE
         }
     }
+}
+
+fn prompt_send() -> Result<(), Box<dyn Error>> {
+    println!("AUDRIX RELAY");
+    println!("พิมพ์ IP ของมือถือ แล้วกด Enter");
+    print!("> ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    let ip: IpAddr = line
+        .trim()
+        .parse()
+        .map_err(|_| format!("IP ไม่ถูกต้อง: {}", line.trim()))?;
+    send(ip, None)
+}
+
+fn pause() {
+    println!("กด Enter เพื่อปิด");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
 }
 
 struct Loopback {
@@ -114,7 +139,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn send(ip: IpAddr) -> Result<(), Box<dyn Error>> {
+fn send(ip: IpAddr, limit: Option<u32>) -> Result<(), Box<dyn Error>> {
     let mut loopback = open_loopback()?;
     if loopback.bytes_per_frame != loopback.channels as usize * 4 {
         return Err("mix format is not f32".into());
@@ -131,13 +156,29 @@ fn send(ip: IpAddr) -> Result<(), Box<dyn Error>> {
     let mut pcm = Vec::new();
     let mut packet = Vec::new();
     let mut attempts = 0u32;
-    while seq < PACKETS_TO_SEND {
-        attempts += 1;
-        if attempts > PACKETS_TO_SEND * 4 {
-            return Err("capture stalled before 50 packets".into());
+    let mut said_waiting = false;
+    println!("ส่งไป {dest}");
+    if limit.is_none() {
+        println!("กด Ctrl+C เพื่อหยุด");
+    }
+    while limit.is_none_or(|max| seq < max) {
+        if limit.is_some() {
+            attempts += 1;
+            if attempts > PACKETS_TO_SEND * 4 {
+                return Err("capture stalled before 50 packets".into());
+            }
         }
-        if !read_pcm16(&mut loopback, &mut pcm)? {
-            continue;
+        match read_pcm16(&mut loopback, &mut pcm) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(err) if limit.is_none() && err.to_string().contains("Wait timed out") => {
+                if !said_waiting {
+                    println!("ยังไม่มีเสียงจากอุปกรณ์ เปิดเสียงบน PC แล้วรอ");
+                    said_waiting = true;
+                }
+                continue;
+            }
+            Err(err) => return Err(err),
         }
         write_packet(
             &mut packet,
@@ -148,6 +189,9 @@ fn send(ip: IpAddr) -> Result<(), Box<dyn Error>> {
         );
         socket.send_to(&packet, dest)?;
         seq += 1;
+        if seq.is_multiple_of(50) {
+            println!("ส่งแล้ว {seq} แพ็กเก็ต");
+        }
     }
     loopback.client.stop_stream()?;
     println!("packets_sent: {seq}");
