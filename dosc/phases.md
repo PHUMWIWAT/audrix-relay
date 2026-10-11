@@ -6,8 +6,6 @@
 
 สถานะมีสามคำ: `todo`, `blocked`, `done`.
 
-ตอนเขียนไฟล์นี้ยังไม่มีโค้ดจับเสียง จึงไม่มีเฟสที่เป็น `done`.
-
 ## 0. ตรวจ APK
 
 - สถานะ: `blocked`
@@ -26,9 +24,9 @@
 
 ## 1. จับเสียงบน Windows
 
-- สถานะ: `todo`
-- เสร็จเมื่อ: —
-- หลักฐาน: —
+- สถานะ: `done`
+- เสร็จเมื่อ: 2026-10-11
+- หลักฐาน: `cargo run` พิมพ์ Headphones (High Definition Audio Device), sample rate 48000, channels 2, buffer 1056 frames, frames_read 1920
 
 โปรแกรม Rust ตัวเดียว จับ WASAPI loopback แล้วพิมพ์ sample rate, channels และ buffer จากอุปกรณ์จริงบน Windows 11.
 
