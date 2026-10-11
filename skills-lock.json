@@ -1,11 +1,29 @@
 {
   "version": 1,
   "skills": {
+    "aesthetic-application": {
+      "source": "alexiseverage/aesthetic-frontend-skills",
+      "sourceType": "github",
+      "skillPath": "skills/aesthetic-application/SKILL.md",
+      "computedHash": "49ed829ceb78ff9727bce397933dc48c4aea15daeb79862f0417093939d545be"
+    },
+    "aesthetic-literacy": {
+      "source": "alexiseverage/aesthetic-frontend-skills",
+      "sourceType": "github",
+      "skillPath": "skills/aesthetic-literacy/SKILL.md",
+      "computedHash": "81f451280a99c912700a91a7b435f7ac309f154f62ca710ec4664d13a585f5d2"
+    },
     "apple-design": {
       "source": "emilkowalski/skills",
       "sourceType": "github",
       "skillPath": "skills/apple-design/SKILL.md",
       "computedHash": "f3f1d2cbc8f3e79ccddff05f4e42d34d995f057fb30ff670e4edf8c87d568b69"
+    },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-design/SKILL.md",
+      "computedHash": "106acf230014cbb43ca34e6410371321b56ca742f9ee0442e8ec05bf02eb0384"
     },
     "rust-async-patterns": {
       "source": "wshobson/agents",
