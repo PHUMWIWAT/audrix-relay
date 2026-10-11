@@ -1,10 +1,16 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::error::Error;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use wasapi::{AudioCaptureClient, AudioClient, Direction, Handle, ShareMode, get_default_device, initialize_mta};
+
+mod ui;
 
 const PORT: u16 = 40123;
 const PACKETS_TO_SEND: u32 = 50;
@@ -34,7 +40,7 @@ fn main() -> ExitCode {
         Err(err) => {
             eprintln!("error: {err}");
             if std::env::args().nth(1).is_none() {
-                pause();
+                ui::alert(&err.to_string());
             }
             ExitCode::FAILURE
         }
@@ -43,23 +49,45 @@ fn main() -> ExitCode {
 
 fn serve() -> Result<(), Box<dyn Error>> {
     let ip = primary_ipv4()?;
-    println!("AUDRIX RELAY");
-    println!("IP ของ PC: {ip}");
-    println!("พอร์ต {PORT}");
-    println!("ย่อหน้าต่างนี้ได้ โปรแกรมยังรับเสียงและส่งอยู่");
-    println!("ถ้ามือถือเชื่อมไม่ได้ ให้อนุญาตโปรแกรมนี้ใน Windows Firewall");
-    println!("กด Ctrl+C เพื่อหยุด");
-
-    let socket = UdpSocket::bind(SocketAddr::new(IpAddr::from([0, 0, 0, 0]), PORT))?;
+    ui::set_ip(ip.to_string());
+    let running = Arc::new(AtomicBool::new(true));
+    let socket = UdpSocket::bind(SocketAddr::new(IpAddr::from([0, 0, 0, 0]), PORT)).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AddrInUse {
+            "โปรแกรมเปิดอยู่แล้ว ปิดหน้าต่างเดิมก่อน".into()
+        } else {
+            Box::new(err) as Box<dyn Error>
+        }
+    })?;
     socket.set_read_timeout(Some(Duration::from_millis(200)))?;
     let socket = Arc::new(socket);
     let target = Arc::new(Mutex::new(None::<(SocketAddr, Instant)>));
 
     let listen_socket = Arc::clone(&socket);
     let listen_target = Arc::clone(&target);
-    std::thread::spawn(move || listen_for_phones(listen_socket, listen_target));
+    let listen_running = Arc::clone(&running);
+    std::thread::spawn(move || listen_for_phones(listen_socket, listen_target, listen_running));
 
+    let send_socket = Arc::clone(&socket);
+    let send_target = Arc::clone(&target);
+    let send_running = Arc::clone(&running);
+    std::thread::spawn(move || {
+        if let Err(err) = capture_send(send_socket, send_target, send_running) {
+            ui::set_error(err.to_string());
+        }
+    });
+
+    ui::run();
+    running.store(false, Ordering::Relaxed);
+    Ok(())
+}
+
+fn capture_send(
+    socket: Arc<UdpSocket>,
+    target: Arc<Mutex<Option<(SocketAddr, Instant)>>>,
+    running: Arc<AtomicBool>,
+) -> Result<(), Box<dyn Error>> {
     let mut loopback = open_loopback()?;
+    ui::set_device(loopback.device_name.clone());
     if loopback.bytes_per_frame != loopback.channels as usize * 4 {
         return Err("mix format is not f32".into());
     }
@@ -67,7 +95,7 @@ fn serve() -> Result<(), Box<dyn Error>> {
     let mut pcm = Vec::new();
     let mut packet = Vec::new();
     let mut active: Option<SocketAddr> = None;
-    loop {
+    while running.load(Ordering::Relaxed) {
         match read_pcm16(&mut loopback, &mut pcm) {
             Ok(false) => continue,
             Ok(true) => {}
@@ -76,12 +104,17 @@ fn serve() -> Result<(), Box<dyn Error>> {
         }
         let dest = current_target(&target);
         let Some(dest) = dest else {
+            if active.is_some() {
+                ui::set_peer(None);
+                ui::set_rtt(None);
+            }
             active = None;
             continue;
         };
         if active != Some(dest) {
             seq = 0;
             active = Some(dest);
+            ui::set_peer(Some(dest.ip().to_string()));
         }
         write_packet(
             &mut packet,
@@ -92,29 +125,44 @@ fn serve() -> Result<(), Box<dyn Error>> {
         );
         socket.send_to(&packet, dest)?;
         seq += 1;
-        if seq.is_multiple_of(50) {
-            println!("ส่งแล้ว {seq} แพ็กเก็ต ไป {dest}");
-        }
     }
+    loopback.client.stop_stream()?;
+    Ok(())
 }
 
-fn listen_for_phones(socket: Arc<UdpSocket>, target: Arc<Mutex<Option<(SocketAddr, Instant)>>>) {
-    let mut buf = [0u8; 64];
-    loop {
-        match socket.recv_from(&mut buf) {
-            Ok((size, addr)) if is_hello(&buf[..size]) => {
-                let mut guard = lock_target(&target);
-                let fresh = guard.as_ref().is_none_or(|(old, _)| *old != addr);
-                *guard = Some((addr, Instant::now()));
-                if fresh {
-                    println!("มือถือเชื่อมจาก {addr}");
-                }
+fn listen_for_phones(
+    socket: Arc<UdpSocket>,
+    target: Arc<Mutex<Option<(SocketAddr, Instant)>>>,
+    running: Arc<AtomicBool>,
+) {
+    let mut buf = [0u8; 256];
+    while running.load(Ordering::Relaxed) {
+        let Ok((size, addr)) = socket.recv_from(&mut buf) else {
+            continue;
+        };
+        let data = &buf[..size];
+        if data == b"FIND" {
+            let mut msg = b"HERE".to_vec();
+            let name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
+            msg.extend(name.into_bytes());
+            let _ = socket.send_to(&msg, addr);
+            continue;
+        }
+        if data.len() == 8 && data.starts_with(b"PING") {
+            let mut pong = [0u8; 8];
+            pong[..4].copy_from_slice(b"PONG");
+            pong[4..].copy_from_slice(&data[4..]);
+            let _ = socket.send_to(&pong, addr);
+            continue;
+        }
+        if is_hello(data) {
+            let mut guard = lock_target(&target);
+            *guard = Some((addr, Instant::now()));
+            if data.len() == 6 {
+                let ms = u16::from_le_bytes([data[4], data[5]]) as u32;
+                ui::set_rtt(Some(ms));
             }
-            Ok(_) => {}
-            Err(err)
-                if err.kind() == std::io::ErrorKind::TimedOut
-                    || err.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(_) => break,
+            ui::set_peer(Some(addr.ip().to_string()));
         }
     }
 }
@@ -145,13 +193,7 @@ fn primary_ipv4() -> Result<IpAddr, Box<dyn Error>> {
 }
 
 fn is_hello(data: &[u8]) -> bool {
-    data == HELLO
-}
-
-fn pause() {
-    println!("กด Enter เพื่อปิด");
-    let mut line = String::new();
-    let _ = std::io::stdin().read_line(&mut line);
+    data.len() == 4 && data == HELLO || data.len() == 6 && data.starts_with(HELLO)
 }
 
 struct Loopback {
@@ -162,6 +204,7 @@ struct Loopback {
     bytes_per_frame: usize,
     channels: u16,
     sample_rate: u32,
+    device_name: String,
 }
 
 fn open_loopback() -> Result<Loopback, Box<dyn Error>> {
@@ -209,6 +252,7 @@ fn open_loopback() -> Result<Loopback, Box<dyn Error>> {
         bytes_per_frame,
         channels: format.get_nchannels(),
         sample_rate: format.get_samplespersec(),
+        device_name: name,
     })
 }
 
@@ -466,8 +510,9 @@ mod tests {
     #[test]
     fn hello_is_only_the_four_byte_mark() {
         assert!(is_hello(b"AXDR"));
+        assert!(is_hello(&[b'A', b'X', b'D', b'R', 12, 0]));
         assert!(!is_hello(b"AXDR!"));
-        assert!(!is_hello(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!is_hello(b"FIND"));
     }
 
     #[test]
