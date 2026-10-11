@@ -47,6 +47,10 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.disconnect).setOnClickListener {
             startService(Intent(this, RelayService::class.java).setAction(RelayService.ACTION_DISCONNECT))
         }
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        Copy.thai = prefs.getBoolean(KEY_LANG, true)
+        findViewById<TextView>(R.id.lang_en).setOnClickListener { chooseLang(false) }
+        findViewById<TextView>(R.id.lang_th).setOnClickListener { chooseLang(true) }
         pcs.setOnItemClickListener { _, _, position, _ ->
             val peer = adapter.getItem(position) ?: return@setOnItemClickListener
             val intent = Intent(this, RelayService::class.java).putExtra(RelayService.EXTRA_IP, peer.ip)
@@ -93,20 +97,23 @@ class MainActivity : Activity() {
         }
         val delay = RelayService.delayMs
         val connected = RelayService.connectedIp
-        findViewById<Button>(R.id.disconnect).visibility = if (connected != null) View.VISIBLE else View.GONE
+        val disconnect = findViewById<Button>(R.id.disconnect)
+        disconnect.text = Copy.stop()
+        disconnect.visibility = if (connected != null) View.VISIBLE else View.GONE
+        paintLang()
         if (delay != null && connected != null) {
             latency.text = delay.toString()
             latency.visibility = View.VISIBLE
             ms.visibility = View.VISIBLE
-            status.text = "กำลังเล่นจาก $connected"
+            status.text = Copy.playing(connected)
         } else if (peers.isEmpty()) {
             latency.visibility = View.GONE
             ms.visibility = View.GONE
-            status.text = "ยังไม่เห็นเครื่องในวงนี้ เปิดโปรแกรมบน PC ก่อน"
+            status.text = Copy.empty()
         } else {
             latency.visibility = View.GONE
             ms.visibility = View.GONE
-            status.text = "แตะชื่อเครื่องเพื่อฟังเสียง"
+            status.text = Copy.tap()
         }
     }
 
@@ -122,5 +129,21 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun chooseLang(thai: Boolean) {
+        Copy.thai = thai
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_LANG, thai).apply()
+        showPeers()
+    }
+
+    private fun paintLang() {
+        findViewById<TextView>(R.id.lang_en).setTextColor(if (Copy.thai) 0xFF8A8074.toInt() else 0xFFE4DCCF.toInt())
+        findViewById<TextView>(R.id.lang_th).setTextColor(if (Copy.thai) 0xFFE4DCCF.toInt() else 0xFF8A8074.toInt())
+    }
+
     private var pendingIp: String? = null
+
+    private companion object {
+        const val PREFS = "audrix"
+        const val KEY_LANG = "thai"
+    }
 }

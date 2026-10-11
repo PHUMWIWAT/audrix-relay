@@ -40,7 +40,7 @@ class RelayService : Service() {
             host = ""
             connectedIp = null
             delayMs = null
-            val note = notification("กำลังหาเครื่อง")
+            val note = notification(Copy.searching())
             getSystemService(NotificationManager::class.java).notify(NOTE_ID, note)
             return START_STICKY
         }
@@ -50,7 +50,7 @@ class RelayService : Service() {
             connectedIp = ip
             requestFocus()
         }
-        val note = notification(if (host.isEmpty()) "กำลังหาเครื่อง" else "กำลังเชื่อม")
+        val note = notification(if (host.isEmpty()) Copy.searching() else Copy.connecting())
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTE_ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         } else {
@@ -150,7 +150,7 @@ class RelayService : Service() {
                 }
                 loss.observe(parsed.seq)
                 val played = play(parsed)
-                status = "$played\n${parsed.sampleRate} Hz"
+                status = "${Copy.playingShort()}\n${parsed.sampleRate} Hz"
                 if (now - lastNote > 1000) {
                     val delay = delayMs?.let { "$it ms" } ?: played
                     getSystemService(NotificationManager::class.java).notify(NOTE_ID, notification(delay))
@@ -293,7 +293,7 @@ class RelayService : Service() {
             .setContentTitle("AUDRIX RELAY")
             .setContentText(text)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "หยุด", stop).build())
+            .addAction(Notification.Action.Builder(null, Copy.stop(), stop).build())
             .build()
     }
 

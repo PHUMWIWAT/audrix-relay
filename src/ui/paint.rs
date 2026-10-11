@@ -9,7 +9,7 @@ use winapi::um::winuser::{
     BeginPaint, DrawTextW, EndPaint, FillRect, GetClientRect, DT_LEFT, DT_SINGLELINE,
 };
 
-use super::{lock, logo, rgb, wide, Snapshot};
+use super::{lock, logo, rgb, slider, wide, Snapshot};
 
 pub unsafe fn paint(hwnd: HWND) {
     let mut paint_struct = std::mem::zeroed();
@@ -32,8 +32,11 @@ pub unsafe fn paint(hwnd: HWND) {
         peer: state.peer.clone(),
         rtt_ms: state.rtt_ms,
         error: state.error.clone(),
+        gain_percent: state.gain_percent,
+        thai: state.thai,
     };
     drop(state);
+    let waiting = if snapshot.thai { "รอให้มือถือเลือกเครื่องนี้" } else { "Waiting for a phone" };
 
     logo::draw(mem, 36, 36, 84);
     text(mem, 136, 52, 28, rgb(0xE4, 0xDC, 0xCF), true, "Audrix");
@@ -54,8 +57,13 @@ pub unsafe fn paint(hwnd: HWND) {
     } else {
         text(mem, 36, y, 36, rgb(0xE4, 0xDC, 0xCF), true, &snapshot.ip);
         y += 64;
-        text(mem, 36, y, 18, rgb(0x8A, 0x80, 0x74), false, "รอให้มือถือเลือกเครื่องนี้");
+        text(mem, 36, y, 18, rgb(0x8A, 0x80, 0x74), false, waiting);
     }
+    let en_color = if snapshot.thai { rgb(0x8A, 0x80, 0x74) } else { rgb(0xE4, 0xDC, 0xCF) };
+    let th_color = if snapshot.thai { rgb(0xE4, 0xDC, 0xCF) } else { rgb(0x8A, 0x80, 0x74) };
+    text(mem, 300, 48, 16, en_color, false, "EN");
+    text(mem, 348, 48, 16, th_color, false, "TH");
+    slider::draw(mem, width, height, snapshot.gain_percent, snapshot.thai);
 
     if let Some(error) = snapshot.error {
         text(mem, 36, height - 96, 16, rgb(0x7C, 0x30, 0x30), false, &error);
@@ -68,6 +76,10 @@ pub unsafe fn paint(hwnd: HWND) {
     DeleteObject(bitmap as *mut _);
     DeleteDC(mem);
     EndPaint(hwnd, &paint_struct);
+}
+
+pub unsafe fn label(hdc: HDC, x: i32, y: i32, size: i32, color: u32, value: &str) -> i32 {
+    text(hdc, x, y, size, color, false, value)
 }
 
 unsafe fn text(hdc: HDC, x: i32, y: i32, size: i32, color: u32, serif: bool, value: &str) -> i32 {

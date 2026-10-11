@@ -2,19 +2,23 @@
 
 mod logo;
 mod paint;
+mod settings;
+mod slider;
 mod tray;
 
 use std::sync::{Mutex, OnceLock};
 
 use winapi::shared::minwindef::{HINSTANCE, LPARAM, LRESULT, WPARAM};
-use winapi::shared::windef::{HBRUSH, HWND};
+use winapi::shared::windef::{HBRUSH, HWND, RECT};
 use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::wingdi::CreateSolidBrush;
 use winapi::um::winuser::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, InvalidateRect,
-    LoadCursorW, LoadIconW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
-    SetProcessDPIAware, SetTimer, ShowWindow, TranslateMessage, CW_USEDEFAULT, IDC_ARROW,
-    IDI_APPLICATION, SW_HIDE, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_PAINT,
+    LoadCursorW, LoadIconW, PostQuitMessage, RegisterClassW, ReleaseCapture, SendMessageW,
+    SetCapture, SetForegroundWindow, SetProcessDPIAware, SetTimer, ShowWindow, TranslateMessage,
+    CW_USEDEFAULT, IDC_ARROW,
+    IDI_APPLICATION, SW_HIDE, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
     WM_RBUTTONUP, WM_SETICON, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED,
     WS_SYSMENU,
 };
@@ -27,6 +31,8 @@ pub struct AppState {
     pub peer: Option<String>,
     pub rtt_ms: Option<u32>,
     pub error: Option<String>,
+    pub gain_percent: u32,
+    pub thai: bool,
 }
 
 impl Default for AppState {
@@ -37,6 +43,8 @@ impl Default for AppState {
             peer: None,
             rtt_ms: None,
             error: None,
+            gain_percent: 100,
+            thai: true,
         }
     }
 }
@@ -47,6 +55,8 @@ pub struct Snapshot {
     pub peer: Option<String>,
     pub rtt_ms: Option<u32>,
     pub error: Option<String>,
+    pub gain_percent: u32,
+    pub thai: bool,
 }
 
 fn state() -> &'static Mutex<AppState> {
@@ -78,6 +88,18 @@ pub fn set_error(error: String) {
     lock().error = Some(error);
 }
 
+pub fn set_gain_percent(percent: u32) {
+    let percent = percent.min(200);
+    lock().gain_percent = percent;
+    crate::capture::set_gain_percent(percent);
+    settings::save();
+}
+
+pub fn set_thai(thai: bool) {
+    lock().thai = thai;
+    settings::save();
+}
+
 pub fn run() {
     unsafe { run_window() }
 }
@@ -99,6 +121,7 @@ pub(super) fn rgb(r: u8, g: u8, b: u8) -> u32 {
 }
 
 unsafe fn run_window() {
+    settings::load();
     SetProcessDPIAware();
     let class = wide("AudrixRelay");
     let mut window_class: WNDCLASSW = std::mem::zeroed();
@@ -165,6 +188,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 ShowWindow(hwnd, SW_HIDE);
                 0
             }
+            WM_LBUTTONDOWN => {
+                on_click(hwnd, lparam, true);
+                0
+            }
+            WM_MOUSEMOVE => {
+                if (wparam & 0x0001) != 0 {
+                    on_click(hwnd, lparam, false);
+                }
+                0
+            }
+            WM_LBUTTONUP => {
+                let _ = ReleaseCapture();
+                0
+            }
             WM_TRAY => {
                 match lparam as u32 {
                     WM_LBUTTONUP => tray::toggle(hwnd),
@@ -197,5 +234,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+fn on_click(hwnd: HWND, lparam: LPARAM, first: bool) {
+    let x = (lparam as i16) as i32;
+    let y = ((lparam >> 16) as i16) as i32;
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    unsafe { winapi::um::winuser::GetClientRect(hwnd, &mut rect) };
+    if let Some(thai) = slider::lang_at(x, y, rect.right) {
+        set_thai(thai);
+        unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+        return;
+    }
+    if slider::contains(x, y, rect.right, rect.bottom) {
+        if first {
+            unsafe { SetCapture(hwnd) };
+        }
+        set_gain_percent(slider::percent_at(x, rect.right));
+        unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
     }
 }

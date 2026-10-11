@@ -48,9 +48,10 @@ pub unsafe fn toggle(hwnd: HWND) {
 
 pub unsafe fn menu(hwnd: HWND) {
     let menu = CreatePopupMenu();
-    let show = wide("แสดง");
-    let hide = wide("ซ่อน");
-    let exit = wide("ออก");
+    let thai = super::lock().thai;
+    let show = wide(if thai { "แสดง" } else { "Show" });
+    let hide = wide(if thai { "ซ่อน" } else { "Hide" });
+    let exit = wide(if thai { "ออก" } else { "Exit" });
     AppendMenuW(menu, MF_STRING, MENU_SHOW, show.as_ptr());
     AppendMenuW(menu, MF_STRING, MENU_HIDE, hide.as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());

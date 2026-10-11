@@ -88,14 +88,34 @@ pub fn read_pcm16(loopback: &mut Loopback, pcm: &mut Vec<i16>) -> Result<bool, B
         let start = i * 4;
         let mut raw = [0u8; 4];
         raw.copy_from_slice(&loopback.bytes[start..start + 4]);
-        pcm[i] = f32_to_i16(f32::from_le_bytes(raw));
+        pcm[i] = shape(f32::from_le_bytes(raw), gain());
     }
     Ok(true)
 }
 
-pub fn f32_to_i16(sample: f32) -> i16 {
-    let clamped = sample.clamp(-1.0, 1.0);
-    (clamped * i16::MAX as f32) as i16
+static GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+pub fn set_gain_percent(percent: u32) {
+    GAIN.store(percent.min(200), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn gain() -> f32 {
+    GAIN.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// Quiet samples stay linear. Peaks above 0.8 bend toward full scale instead of
+/// flat-topping, which is what makes heavy bass sound harsh as PCM16.
+pub fn shape(sample: f32, gain: f32) -> i16 {
+    let x = sample * gain;
+    let ax = x.abs();
+    let y = if ax <= 0.8 {
+        ax
+    } else {
+        let t = ((ax - 0.8) / 1.2).min(1.0);
+        0.8 + 0.2 * (1.0 - (1.0 - t) * (1.0 - t))
+    };
+    let out = y.copysign(x).clamp(-1.0, 1.0);
+    (out * i16::MAX as f32) as i16
 }
 
 pub fn capture() -> Result<(), Box<dyn Error>> {
@@ -122,13 +142,16 @@ pub fn capture() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::f32_to_i16;
+    use super::shape;
 
     #[test]
-    fn f32_sample_clips_to_i16() {
-        assert_eq!(f32_to_i16(0.0), 0);
-        assert_eq!(f32_to_i16(1.0), i16::MAX);
-        assert_eq!(f32_to_i16(-1.0), -i16::MAX);
-        assert_eq!(f32_to_i16(4.0), i16::MAX);
+    fn quiet_samples_stay_linear_and_hot_bass_does_not_flat_top() {
+        assert_eq!(shape(0.0, 1.0), 0);
+        let quiet = shape(0.25, 1.0);
+        let expected = (0.25 * i16::MAX as f32) as i16;
+        assert!((quiet as i32 - expected as i32).abs() <= 1);
+        assert!(shape(1.4, 1.0) < i16::MAX);
+        assert_eq!(shape(-4.0, 1.0), -i16::MAX);
+        assert_eq!(shape(0.5, 0.0), 0);
     }
 }
