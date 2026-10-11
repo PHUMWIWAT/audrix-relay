@@ -19,8 +19,8 @@ android {
         applicationId = "com.audrix.relay"
         minSdk = 26
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.3"
+        versionCode = 4
+        versionName = "0.4"
     }
 
     signingConfigs {

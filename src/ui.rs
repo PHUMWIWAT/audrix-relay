@@ -7,7 +7,8 @@ use winapi::shared::windef::{HBRUSH, HDC, HWND, RECT, SIZE};
 use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::wingdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush, DeleteDC,
-    DeleteObject, GetTextExtentPoint32W, SelectObject, SetBkMode, SetTextColor, CLR_INVALID, DEFAULT_CHARSET,
+    DeleteObject, GetTextExtentPoint32W, SelectObject, SetBkMode, SetTextColor, StretchDIBits,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLR_INVALID, DIB_RGB_COLORS, DEFAULT_CHARSET,
     DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
     CLEARTYPE_QUALITY, SRCCOPY, TRANSPARENT,
 };
@@ -145,14 +146,13 @@ unsafe fn paint(hwnd: HWND) {
     DeleteObject(ground as *mut _);
 
     let snapshot = lock().clone_text();
-    let mut y = 48;
-    text(mem, 36, y, 28, rgb(0xE4, 0xDC, 0xCF), true, "Audrix");
-    y += 44;
-    let rule = RECT { left: 36, top: y, right: 108, bottom: y + 2 };
+    draw_logo(mem, 36, 36, 84);
+    text(mem, 136, 52, 28, rgb(0xE4, 0xDC, 0xCF), true, "Audrix");
+    let rule = RECT { left: 136, top: 96, right: 208, bottom: 98 };
     let oxblood = CreateSolidBrush(rgb(0x7C, 0x30, 0x30));
     FillRect(mem, &rule, oxblood);
     DeleteObject(oxblood as *mut _);
-    y += 48;
+    let mut y = 156;
 
     if let Some(ms) = snapshot.rtt_ms {
         let number = ms.to_string();
@@ -240,6 +240,43 @@ pub fn alert(message: &str) {
         let title = wide("Audrix Relay");
         winapi::um::winuser::MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10);
     }
+}
+
+const LOGO: &[u8] = include_bytes!("../assets/logo-mark.bmp");
+
+unsafe fn draw_logo(hdc: HDC, x: i32, y: i32, size: i32) {
+    if LOGO.len() < 54 {
+        return;
+    }
+    let mut size_bytes = [0u8; 4];
+    size_bytes.copy_from_slice(&LOGO[18..22]);
+    let width = i32::from_le_bytes(size_bytes);
+    size_bytes.copy_from_slice(&LOGO[22..26]);
+    let height = i32::from_le_bytes(size_bytes);
+    size_bytes.copy_from_slice(&LOGO[10..14]);
+    let offset = u32::from_le_bytes(size_bytes) as usize;
+    let mut info: BITMAPINFO = std::mem::zeroed();
+    info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    StretchDIBits(
+        hdc,
+        x,
+        y,
+        size,
+        size,
+        0,
+        0,
+        width,
+        height,
+        LOGO[offset..].as_ptr() as *const _,
+        &info,
+        DIB_RGB_COLORS,
+        SRCCOPY,
+    );
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> u32 {

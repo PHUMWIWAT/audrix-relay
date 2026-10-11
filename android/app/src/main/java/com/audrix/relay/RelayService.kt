@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.graphics.BitmapFactory
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -249,6 +250,7 @@ class RelayService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_media_play)
+            .setLargeIcon(BitmapFactory.decodeResource(resources, R.drawable.logo_mark))
             .setContentTitle("AUDRIX RELAY")
             .setContentText(text)
             .setOngoing(true)
