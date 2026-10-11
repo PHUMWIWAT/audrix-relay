@@ -103,18 +103,10 @@ pub fn gain() -> f32 {
     GAIN.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
-/// Quiet samples stay linear. Peaks above 0.8 bend toward full scale instead of
-/// flat-topping, which is what makes heavy bass sound harsh as PCM16.
+/// Pass the sample through. PCM16 cannot store anything outside full scale,
+/// so only those peaks are limited.
 pub fn shape(sample: f32, gain: f32) -> i16 {
-    let x = sample * gain;
-    let ax = x.abs();
-    let y = if ax <= 0.8 {
-        ax
-    } else {
-        let t = ((ax - 0.8) / 1.2).min(1.0);
-        0.8 + 0.2 * (1.0 - (1.0 - t) * (1.0 - t))
-    };
-    let out = y.copysign(x).clamp(-1.0, 1.0);
+    let out = (sample * gain).clamp(-1.0, 1.0);
     (out * i16::MAX as f32) as i16
 }
 
@@ -150,7 +142,10 @@ mod tests {
         let quiet = shape(0.25, 1.0);
         let expected = (0.25 * i16::MAX as f32) as i16;
         assert!((quiet as i32 - expected as i32).abs() <= 1);
-        assert!(shape(1.4, 1.0) < i16::MAX);
+        let loud = shape(0.9, 1.0);
+        let expected_loud = (0.9 * i16::MAX as f32) as i16;
+        assert!((loud as i32 - expected_loud as i32).abs() <= 1);
+        assert_eq!(shape(1.4, 1.0), i16::MAX);
         assert_eq!(shape(-4.0, 1.0), -i16::MAX);
         assert_eq!(shape(0.5, 0.0), 0);
     }
