@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/status"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1A1714"
+    android:padding="24dp"
+    android:text="ฟัง UDP พอร์ต 40123"
+    android:textColor="#E4DCCF"
+    android:textSize="22sp" />
