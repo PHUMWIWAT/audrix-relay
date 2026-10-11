@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 wasapi = "=0.12.0"
-winapi = { version = "0.3", features = ["libloaderapi", "wingdi", "winuser"] }
+winapi = { version = "0.3", features = ["libloaderapi", "shellapi", "wingdi", "winuser"] }

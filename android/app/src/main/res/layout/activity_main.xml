@@ -76,6 +76,18 @@
             android:textSize="20sp" />
     </LinearLayout>
 
+    <Button
+        android:id="@+id/disconnect"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:background="#241816"
+        android:paddingStart="18dp"
+        android:paddingEnd="18dp"
+        android:text="หยุด"
+        android:textColor="#E4DCCF"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/status"
         android:layout_width="match_parent"

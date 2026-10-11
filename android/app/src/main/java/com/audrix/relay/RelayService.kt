@@ -36,9 +36,13 @@ class RelayService : Service() {
     override fun onBind(intent: Intent?) = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        if (intent?.action == ACTION_STOP || intent?.action == ACTION_DISCONNECT) {
+            host = ""
+            connectedIp = null
+            delayMs = null
+            val note = notification("กำลังหาเครื่อง")
+            getSystemService(NotificationManager::class.java).notify(NOTE_ID, note)
+            return START_STICKY
         }
         val ip = intent?.getStringExtra(EXTRA_IP).orEmpty().trim()
         if (ip.isNotEmpty()) {
@@ -84,6 +88,9 @@ class RelayService : Service() {
         var lastNote = 0L
         try {
             while (running) {
+                if (host.isEmpty() && track != null) {
+                    releaseTrack()
+                }
                 val now = SystemClock.elapsedRealtime()
                 if (now >= nextFind) {
                     val find = "FIND".toByteArray(StandardCharsets.US_ASCII)
@@ -133,6 +140,9 @@ class RelayService : Service() {
                         }
                     }
                     continue
+                }
+                if (host.isEmpty() && track != null) {
+                    releaseTrack()
                 }
                 val parsed = parsePacket(buffer, size) ?: continue
                 if (host.isEmpty()) {
@@ -185,27 +195,56 @@ class RelayService : Service() {
             if (min <= 0) {
                 return "ยังไม่เล่น: เครื่องไม่รับรูปแบบนี้"
             }
-            track = AudioTrack.Builder()
-                .setAudioAttributes(mediaAttributes())
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(parsed.sampleRate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(mask)
-                        .build(),
-                )
-                .setBufferSizeInBytes(min * 2)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            val frameBytes = parsed.channels * 2
+            val want = (parsed.sampleRate * frameBytes * 20 / 1000).coerceAtLeast(frameBytes * 32)
+            track = openTrack(parsed.sampleRate, mask, want)
+                ?: openTrack(parsed.sampleRate, mask, min)
+            if (track == null) {
+                return "ยังไม่เล่น: เครื่องไม่รับรูปแบบนี้"
+            }
             track?.play()
             trackRate = parsed.sampleRate
             trackChannels = parsed.channels
         }
-        val written = track?.write(parsed.pcm, 0, parsed.pcm.size) ?: return "ยังไม่เล่น"
-        if (written < 0) {
-            return "เขียนเสียงไม่ได้"
+        val current = track ?: return "ยังไม่เล่น"
+        var offset = 0
+        while (offset < parsed.pcm.size) {
+            val wrote = current.write(
+                parsed.pcm,
+                offset,
+                parsed.pcm.size - offset,
+                AudioTrack.WRITE_NON_BLOCKING,
+            )
+            if (wrote <= 0) {
+                break
+            }
+            offset += wrote
         }
         return "กำลังเล่น"
+    }
+
+    private fun openTrack(sampleRate: Int, mask: Int, bufferBytes: Int): AudioTrack? {
+        if (bufferBytes <= 0) {
+            return null
+        }
+        val opened = AudioTrack.Builder()
+            .setAudioAttributes(mediaAttributes())
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(mask)
+                    .build(),
+            )
+            .setBufferSizeInBytes(bufferBytes)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            .build()
+        if (opened.state != AudioTrack.STATE_INITIALIZED) {
+            opened.release()
+            return null
+        }
+        return opened
     }
 
     private fun requestFocus() {
@@ -263,6 +302,7 @@ class RelayService : Service() {
     companion object {
         const val EXTRA_IP = "pc_ip"
         const val ACTION_STOP = "stop"
+        const val ACTION_DISCONNECT = "disconnect"
         const val PORT = 40123
         private const val CHANNEL = "relay"
         private const val NOTE_ID = 1

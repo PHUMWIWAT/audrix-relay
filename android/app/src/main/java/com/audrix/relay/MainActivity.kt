@@ -12,6 +12,7 @@ import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.ListView
 import android.widget.TextView
 
@@ -43,6 +44,9 @@ class MainActivity : Activity() {
         pcs = findViewById(R.id.pcs)
         adapter = PeerAdapter()
         pcs.adapter = adapter
+        findViewById<Button>(R.id.disconnect).setOnClickListener {
+            startService(Intent(this, RelayService::class.java).setAction(RelayService.ACTION_DISCONNECT))
+        }
         pcs.setOnItemClickListener { _, _, position, _ ->
             val peer = adapter.getItem(position) ?: return@setOnItemClickListener
             val intent = Intent(this, RelayService::class.java).putExtra(RelayService.EXTRA_IP, peer.ip)
@@ -89,6 +93,7 @@ class MainActivity : Activity() {
         }
         val delay = RelayService.delayMs
         val connected = RelayService.connectedIp
+        findViewById<Button>(R.id.disconnect).visibility = if (connected != null) View.VISIBLE else View.GONE
         if (delay != null && connected != null) {
             latency.text = delay.toString()
             latency.visibility = View.VISIBLE

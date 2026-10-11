@@ -214,13 +214,18 @@ fn open_loopback() -> Result<Loopback, Box<dyn Error>> {
     let name = device.get_friendlyname()?;
     let mut client = device.get_iaudioclient()?;
     let format = client.get_mixformat()?;
-    let (default_period, _) = client.get_periods()?;
+    let (default_period, min_period) = client.get_periods()?;
+    let period = if min_period > 0 {
+        min_period.clamp(100_000, default_period.max(100_000))
+    } else {
+        default_period
+    };
 
     // Render device plus capture direction is WASAPI loopback inside wasapi 0.12.
     // shortcut: wasapi 0.12, the GNU toolchain has no dlltool for wasapi 0.25.
     client.initialize_client(
         &format,
-        default_period,
+        period,
         &Direction::Capture,
         &ShareMode::Shared,
         false,
@@ -237,7 +242,7 @@ fn open_loopback() -> Result<Loopback, Box<dyn Error>> {
     println!("bits_per_sample: {}", format.get_bitspersample());
     println!("sample_type: {sample_type}");
     println!("buffer_frames: {buffer_frames}");
-    println!("period_hns: {default_period}");
+    println!("period_hns: {period}");
 
     let event = client.set_get_eventhandle()?;
     let capture = client.get_audiocaptureclient()?;
