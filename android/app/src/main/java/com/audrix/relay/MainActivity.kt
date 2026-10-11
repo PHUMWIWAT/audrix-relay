@@ -1,163 +1,86 @@
 package com.audrix.relay
 
+import android.Manifest
 import android.app.Activity
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.Inet4Address
-import java.net.NetworkInterface
-import java.net.SocketTimeoutException
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
-    private var worker: Thread? = null
-    @Volatile private var running = false
-    @Volatile private var socket: DatagramSocket? = null
-    private var track: AudioTrack? = null
-    private var trackRate = 0
-    private var trackChannels = 0
+    private lateinit var pcIp: EditText
+    private val tick = Handler(Looper.getMainLooper())
+    private val refresh = object : Runnable {
+        override fun run() {
+            status.text = RelayService.status
+            tick.postDelayed(this, 500)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         status = findViewById(R.id.status)
-        showIdle()
+        pcIp = findViewById(R.id.pc_ip)
+        pcIp.setText(getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_IP, ""))
+        findViewById<Button>(R.id.connect).setOnClickListener { connect() }
     }
 
     override fun onStart() {
         super.onStart()
-        running = true
-        worker = Thread(::listen, "relay-udp").also { it.start() }
+        tick.post(refresh)
     }
 
     override fun onStop() {
-        running = false
-        socket?.close()
-        worker?.join(2000)
-        worker = null
+        tick.removeCallbacks(refresh)
         super.onStop()
     }
 
-    private fun listen() {
-        val bound = try {
-            DatagramSocket(PORT)
-        } catch (err: Exception) {
-            show("เปิดพอร์ต $PORT ไม่ได้\n${err.message}")
+    private fun connect() {
+        val ip = pcIp.text.toString().trim()
+        if (ip.isEmpty()) {
+            status.text = "ใส่ IP ของ PC ก่อน"
             return
         }
-        socket = bound
-        bound.soTimeout = 500
-        val loss = LossCount()
-        val buffer = ByteArray(65536)
-        val packet = DatagramPacket(buffer, buffer.size)
-        try {
-            while (running) {
-                val size = try {
-                    bound.receive(packet)
-                    packet.length
-                } catch (_: SocketTimeoutException) {
-                    continue
-                } catch (_: Exception) {
-                    break
-                }
-                val parsed = parsePacket(buffer, size) ?: continue
-                loss.observe(parsed.seq)
-                val played = play(parsed)
-                show(
-                    "ให้ PC ส่งมาที่ ${ipv4()}\n" +
-                        "พอร์ต $PORT\n" +
-                        "แพ็กเก็ต ${loss.received}\n" +
-                        "หาย ${loss.lost}\n" +
-                        "${parsed.sampleRate} Hz · ${parsed.channels} ช่อง\n" +
-                        played,
-                )
-            }
-        } finally {
-            bound.close()
-            releaseTrack()
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_IP, ip).apply()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY)
+            return
+        }
+        startRelay(ip)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_NOTIFY) {
+            startRelay(pcIp.text.toString().trim())
         }
     }
 
-    private fun play(parsed: PcmPacket): String {
-        val mask = when (parsed.channels) {
-            1 -> AudioFormat.CHANNEL_OUT_MONO
-            2 -> AudioFormat.CHANNEL_OUT_STEREO
-            else -> return "ยังไม่เล่น: รองรับ 1 หรือ 2 ช่อง"
+    private fun startRelay(ip: String) {
+        val intent = Intent(this, RelayService::class.java).putExtra(RelayService.EXTRA_IP, ip)
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
-        if (track == null || trackRate != parsed.sampleRate || trackChannels != parsed.channels) {
-            releaseTrack()
-            val min = AudioTrack.getMinBufferSize(parsed.sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT)
-            if (min <= 0) {
-                return "ยังไม่เล่น: เครื่องไม่รับรูปแบบนี้"
-            }
-            track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build(),
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(parsed.sampleRate)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(mask)
-                        .build(),
-                )
-                .setBufferSizeInBytes(min * 2)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-            track?.play()
-            trackRate = parsed.sampleRate
-            trackChannels = parsed.channels
-        }
-        val written = track?.write(parsed.pcm, 0, parsed.pcm.size) ?: return "ยังไม่เล่น"
-        if (written < 0) {
-            return "เขียนเสียงไม่ได้"
-        }
-        return "กำลังเล่น"
-    }
-
-    private fun releaseTrack() {
-        val current = track ?: return
-        track = null
-        trackRate = 0
-        trackChannels = 0
-        try {
-            current.pause()
-        } catch (_: IllegalStateException) {
-        }
-        current.release()
-    }
-
-    private fun showIdle() {
-        status.text = "ให้ PC ส่งมาที่ ${ipv4()}\nพอร์ต $PORT"
-    }
-
-    private fun show(text: String) {
-        runOnUiThread { status.text = text }
-    }
-
-    private fun ipv4(): String {
-        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return "ไม่พบ IP"
-        for (iface in interfaces) {
-            if (!iface.isUp || iface.isLoopback) {
-                continue
-            }
-            for (addr in iface.inetAddresses) {
-                if (addr is Inet4Address) {
-                    return addr.hostAddress ?: continue
-                }
-            }
-        }
-        return "ไม่พบ IP"
     }
 
     private companion object {
-        const val PORT = 40123
+        const val PREFS = "audrix"
+        const val KEY_IP = "pc_ip"
+        const val REQUEST_NOTIFY = 1
     }
 }

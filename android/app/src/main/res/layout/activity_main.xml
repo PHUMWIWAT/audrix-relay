@@ -1,10 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
-<TextView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/status"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#1A1714"
-    android:padding="24dp"
-    android:text="ฟัง UDP พอร์ต 40123"
-    android:textColor="#E4DCCF"
-    android:textSize="22sp" />
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <EditText
+        android:id="@+id/pc_ip"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="IP ของ PC"
+        android:inputType="text"
+        android:textColor="#E4DCCF"
+        android:textColorHint="#8A8074"
+        android:textSize="22sp" />
+
+    <Button
+        android:id="@+id/connect"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="เชื่อมต่อ" />
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="ใส่ IP ที่หน้าต่าง PC แสดง แล้วกดเชื่อมต่อ"
+        android:textColor="#E4DCCF"
+        android:textSize="20sp" />
+</LinearLayout>

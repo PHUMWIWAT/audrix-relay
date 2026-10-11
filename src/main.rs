@@ -1,19 +1,21 @@
 use std::error::Error;
-use std::io::{BufRead, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use wasapi::{AudioCaptureClient, AudioClient, Direction, Handle, ShareMode, get_default_device, initialize_mta};
 
 const PORT: u16 = 40123;
 const PACKETS_TO_SEND: u32 = 50;
 const HEADER_LEN: usize = 10;
+const HELLO: &[u8] = b"AXDR";
+const TARGET_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
-        None => prompt_send(),
+        None => serve(),
         Some("send") => match args.next() {
             None => send(IpAddr::from([127, 0, 0, 1]), Some(PACKETS_TO_SEND)),
             Some(host) => match host.parse::<IpAddr>() {
@@ -39,18 +41,111 @@ fn main() -> ExitCode {
     }
 }
 
-fn prompt_send() -> Result<(), Box<dyn Error>> {
+fn serve() -> Result<(), Box<dyn Error>> {
+    let ip = primary_ipv4()?;
     println!("AUDRIX RELAY");
-    println!("พิมพ์ IP ของมือถือ แล้วกด Enter");
-    print!("> ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
-    let ip: IpAddr = line
-        .trim()
-        .parse()
-        .map_err(|_| format!("IP ไม่ถูกต้อง: {}", line.trim()))?;
-    send(ip, None)
+    println!("IP ของ PC: {ip}");
+    println!("พอร์ต {PORT}");
+    println!("ย่อหน้าต่างนี้ได้ โปรแกรมยังรับเสียงและส่งอยู่");
+    println!("ถ้ามือถือเชื่อมไม่ได้ ให้อนุญาตโปรแกรมนี้ใน Windows Firewall");
+    println!("กด Ctrl+C เพื่อหยุด");
+
+    let socket = UdpSocket::bind(SocketAddr::new(IpAddr::from([0, 0, 0, 0]), PORT))?;
+    socket.set_read_timeout(Some(Duration::from_millis(200)))?;
+    let socket = Arc::new(socket);
+    let target = Arc::new(Mutex::new(None::<(SocketAddr, Instant)>));
+
+    let listen_socket = Arc::clone(&socket);
+    let listen_target = Arc::clone(&target);
+    std::thread::spawn(move || listen_for_phones(listen_socket, listen_target));
+
+    let mut loopback = open_loopback()?;
+    if loopback.bytes_per_frame != loopback.channels as usize * 4 {
+        return Err("mix format is not f32".into());
+    }
+    let mut seq = 0u32;
+    let mut pcm = Vec::new();
+    let mut packet = Vec::new();
+    let mut active: Option<SocketAddr> = None;
+    loop {
+        match read_pcm16(&mut loopback, &mut pcm) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(err) if err.to_string().contains("Wait timed out") => continue,
+            Err(err) => return Err(err),
+        }
+        let dest = current_target(&target);
+        let Some(dest) = dest else {
+            active = None;
+            continue;
+        };
+        if active != Some(dest) {
+            seq = 0;
+            active = Some(dest);
+        }
+        write_packet(
+            &mut packet,
+            seq,
+            loopback.sample_rate,
+            loopback.channels,
+            &pcm,
+        );
+        socket.send_to(&packet, dest)?;
+        seq += 1;
+        if seq.is_multiple_of(50) {
+            println!("ส่งแล้ว {seq} แพ็กเก็ต ไป {dest}");
+        }
+    }
+}
+
+fn listen_for_phones(socket: Arc<UdpSocket>, target: Arc<Mutex<Option<(SocketAddr, Instant)>>>) {
+    let mut buf = [0u8; 64];
+    loop {
+        match socket.recv_from(&mut buf) {
+            Ok((size, addr)) if is_hello(&buf[..size]) => {
+                let mut guard = lock_target(&target);
+                let fresh = guard.as_ref().is_none_or(|(old, _)| *old != addr);
+                *guard = Some((addr, Instant::now()));
+                if fresh {
+                    println!("มือถือเชื่อมจาก {addr}");
+                }
+            }
+            Ok(_) => {}
+            Err(err)
+                if err.kind() == std::io::ErrorKind::TimedOut
+                    || err.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+    }
+}
+
+fn current_target(target: &Mutex<Option<(SocketAddr, Instant)>>) -> Option<SocketAddr> {
+    let mut guard = lock_target(target);
+    match *guard {
+        Some((addr, seen)) if seen.elapsed() < TARGET_TIMEOUT => Some(addr),
+        Some(_) => {
+            *guard = None;
+            println!("มือถือหลุด");
+            None
+        }
+        None => None,
+    }
+}
+
+fn lock_target(
+    target: &Mutex<Option<(SocketAddr, Instant)>>,
+) -> std::sync::MutexGuard<'_, Option<(SocketAddr, Instant)>> {
+    target.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn primary_ipv4() -> Result<IpAddr, Box<dyn Error>> {
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect("8.8.8.8:80")?;
+    Ok(socket.local_addr()?.ip())
+}
+
+fn is_hello(data: &[u8]) -> bool {
+    data == HELLO
 }
 
 fn pause() {
@@ -347,7 +442,7 @@ impl LossCount {
 
 #[cfg(test)]
 mod tests {
-    use super::{LossCount, f32_to_i16, parse_packet, write_packet};
+    use super::{LossCount, f32_to_i16, is_hello, parse_packet, write_packet};
 
     #[test]
     fn loss_count_counts_a_gap_and_ignores_a_duplicate() {
@@ -366,6 +461,13 @@ mod tests {
         assert_eq!(f32_to_i16(1.0), i16::MAX);
         assert_eq!(f32_to_i16(-1.0), -i16::MAX);
         assert_eq!(f32_to_i16(4.0), i16::MAX);
+    }
+
+    #[test]
+    fn hello_is_only_the_four_byte_mark() {
+        assert!(is_hello(b"AXDR"));
+        assert!(!is_hello(b"AXDR!"));
+        assert!(!is_hello(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
     }
 
     #[test]
