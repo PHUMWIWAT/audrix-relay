@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="848" height="360" viewBox="0 0 848 360" role="img" aria-label="Audrix Relay">
+  <rect width="848" height="360" fill="#1A1714"/>
+  <rect x="36" y="36" width="288" height="288" fill="none" stroke="#E4DCCF" stroke-width="1.5" opacity="0.28"/>
+  <text x="180" y="214" text-anchor="middle" font-family="Palatino Linotype, Palatino, Georgia, serif" font-size="150" fill="#E4DCCF">A</text>
+  <rect x="124" y="242" width="112" height="4" fill="#7C3030"/>
+  <text x="380" y="168" font-family="Palatino Linotype, Palatino, Georgia, serif" font-size="92" letter-spacing="10" fill="#E4DCCF">AUDRIX</text>
+  <rect x="384" y="198" width="168" height="3" fill="#7C3030"/>
+  <text x="384" y="246" font-family="Palatino Linotype, Palatino, Georgia, serif" font-size="28" letter-spacing="16" fill="#A35454">RELAY</text>
+</svg>
