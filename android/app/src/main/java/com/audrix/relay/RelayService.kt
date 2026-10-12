@@ -27,6 +27,8 @@ class RelayService : Service() {
     private var worker: Thread? = null
     @Volatile private var running = false
     @Volatile private var socket: DatagramSocket? = null
+    private val queue = PcmQueue()
+    private var player: Thread? = null
     private var track: AudioTrack? = null
     private var trackRate = 0
     private var trackChannels = 0
@@ -58,6 +60,8 @@ class RelayService : Service() {
         }
         if (worker?.isAlive != true) {
             running = true
+            player = Thread({ runCatching { playLoop() } }, "relay-play")
+            player?.start()
             worker = Thread({ runCatching { listen() }.onFailure { status = "เชื่อมไม่ได้\n${it.message}" } }, "relay-udp")
             worker?.start()
         }
@@ -68,6 +72,7 @@ class RelayService : Service() {
         running = false
         socket?.close()
         worker?.join(1500)
+        player?.join(1500)
         releaseTrack()
         focus?.let { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(it) }
         super.onDestroy()
@@ -149,10 +154,10 @@ class RelayService : Service() {
                     continue
                 }
                 loss.observe(parsed.seq)
-                val played = play(parsed)
+                queue.push(parsed.seq.toLong(), soften(parsed))
                 status = "${Copy.playingShort()}\n${parsed.sampleRate} Hz"
                 if (now - lastNote > 1000) {
-                    val delay = delayMs?.let { "$it ms" } ?: played
+                    val delay = delayMs?.let { "$it ms" } ?: Copy.playingShort()
                     getSystemService(NotificationManager::class.java).notify(NOTE_ID, notification(delay))
                     lastNote = now
                 }
@@ -183,44 +188,47 @@ class RelayService : Service() {
         }
     }
 
-    private fun play(parsed: PcmPacket): String {
-        val mask = when (parsed.channels) {
+    private fun playLoop() {
+        while (running) {
+            if (host.isEmpty()) {
+                queue.clear()
+                releaseTrack()
+                Thread.sleep(20)
+                continue
+            }
+            val chunk = queue.pop()
+            if (chunk == null) {
+                Thread.sleep(2)
+                continue
+            }
+            writeChunk(chunk)
+        }
+    }
+
+    private fun soften(parsed: PcmPacket): PcmChunk {
+        val pcm = ShortArray(parsed.pcm.size)
+        for (i in parsed.pcm.indices) {
+            pcm[i] = (parsed.pcm[i] * SPEAKER_GAIN).toInt().toShort()
+        }
+        return PcmChunk(pcm, parsed.sampleRate, parsed.channels)
+    }
+
+    private fun writeChunk(chunk: PcmChunk) {
+        val mask = when (chunk.channels) {
             1 -> AudioFormat.CHANNEL_OUT_MONO
             2 -> AudioFormat.CHANNEL_OUT_STEREO
-            else -> return "ยังไม่เล่น: รองรับ 1 หรือ 2 ช่อง"
+            else -> return
         }
-        if (track == null || trackRate != parsed.sampleRate || trackChannels != parsed.channels) {
+        if (track == null || trackRate != chunk.sampleRate || trackChannels != chunk.channels) {
             releaseTrack()
-            val min = AudioTrack.getMinBufferSize(parsed.sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT)
-            if (min <= 0) {
-                return "ยังไม่เล่น: เครื่องไม่รับรูปแบบนี้"
-            }
-            val frameBytes = parsed.channels * 2
-            val want = (parsed.sampleRate * frameBytes * 20 / 1000).coerceAtLeast(frameBytes * 32)
-            track = openTrack(parsed.sampleRate, mask, want)
-                ?: openTrack(parsed.sampleRate, mask, min)
-            if (track == null) {
-                return "ยังไม่เล่น: เครื่องไม่รับรูปแบบนี้"
-            }
+            val frameBytes = chunk.channels * 2
+            val want = (chunk.sampleRate * frameBytes * 40 / 1000).coerceAtLeast(frameBytes * 64)
+            track = openTrack(chunk.sampleRate, mask, want)
             track?.play()
-            trackRate = parsed.sampleRate
-            trackChannels = parsed.channels
+            trackRate = chunk.sampleRate
+            trackChannels = chunk.channels
         }
-        val current = track ?: return "ยังไม่เล่น"
-        var offset = 0
-        while (offset < parsed.pcm.size) {
-            val wrote = current.write(
-                parsed.pcm,
-                offset,
-                parsed.pcm.size - offset,
-                AudioTrack.WRITE_NON_BLOCKING,
-            )
-            if (wrote <= 0) {
-                break
-            }
-            offset += wrote
-        }
-        return "กำลังเล่น"
+        track?.write(chunk.pcm, 0, chunk.pcm.size, AudioTrack.WRITE_BLOCKING)
     }
 
     private fun openTrack(sampleRate: Int, mask: Int, bufferBytes: Int): AudioTrack? {
@@ -304,6 +312,7 @@ class RelayService : Service() {
         const val ACTION_STOP = "stop"
         const val ACTION_DISCONNECT = "disconnect"
         const val PORT = 40123
+        private const val SPEAKER_GAIN = 0.71f
         private const val CHANNEL = "relay"
         private const val NOTE_ID = 1
         private val HELLO = byteArrayOf(0x41, 0x58, 0x44, 0x52)
