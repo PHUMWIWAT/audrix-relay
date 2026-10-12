@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::error::Error;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,13 +59,23 @@ fn capture_send(
     let mut seq = 0u32;
     let mut pcm = Vec::new();
     let mut packet = Vec::new();
+    let mut queued: VecDeque<u8> = VecDeque::new();
     let mut active: Option<SocketAddr> = None;
+    let bytes_per_frame = (loopback.channels as usize).max(1) * 2;
     while running.load(Ordering::Relaxed) {
         match capture::read_pcm16(&mut loopback, &mut pcm) {
             Ok(false) => continue,
             Ok(true) => {}
             Err(err) if err.to_string().contains("Wait timed out") => continue,
             Err(err) => return Err(err),
+        }
+        for sample in &pcm {
+            queued.extend(sample.to_le_bytes());
+        }
+        let chunk_bytes = chunk_bytes(loopback.sample_rate, bytes_per_frame);
+        let cap = chunk_bytes.saturating_mul(4);
+        while cap > 0 && queued.len() > cap {
+            queued.drain(..bytes_per_frame.min(queued.len()));
         }
         let dest = current_target(&target);
         let Some(dest) = dest else {
@@ -73,6 +84,7 @@ fn capture_send(
                 ui::set_rtt(None);
             }
             active = None;
+            queued.clear();
             continue;
         };
         if active != Some(dest) {
@@ -80,15 +92,18 @@ fn capture_send(
             active = Some(dest);
             ui::set_peer(Some(dest.ip().to_string()));
         }
-        packet::write_packet(
-            &mut packet,
-            seq,
-            loopback.sample_rate,
-            loopback.channels,
-            &pcm,
-        );
-        socket.send_to(&packet, dest)?;
-        seq += 1;
+        while chunk_bytes > 0 && queued.len() >= chunk_bytes {
+            let chunk: Vec<u8> = queued.drain(..chunk_bytes).collect();
+            seq = send_chunk(
+                &socket,
+                dest,
+                seq,
+                loopback.sample_rate,
+                loopback.channels,
+                &chunk,
+                &mut packet,
+            )?;
+        }
     }
     loopback.client.stop_stream()?;
     Ok(())
@@ -129,6 +144,34 @@ fn listen_for_phones(
             ui::set_peer(Some(addr.ip().to_string()));
         }
     }
+}
+
+fn chunk_bytes(sample_rate: u32, bytes_per_frame: usize) -> usize {
+    let ms = capture::chunk_ms();
+    (sample_rate as usize)
+        .saturating_mul(bytes_per_frame)
+        .saturating_mul(ms as usize)
+        / 1000
+}
+
+fn send_chunk(
+    socket: &UdpSocket,
+    dest: SocketAddr,
+    mut seq: u32,
+    sample_rate: u32,
+    channels: u16,
+    chunk: &[u8],
+    packet: &mut Vec<u8>,
+) -> Result<u32, Box<dyn Error>> {
+    let bytes_per_frame = (channels as usize).max(1) * 2;
+    let max_payload = packet::max_payload_bytes(bytes_per_frame);
+    let per = packet::even_split_bytes(chunk.len(), max_payload, bytes_per_frame).max(1);
+    for slice in chunk.chunks(per) {
+        packet::write_pcm_bytes(packet, seq, sample_rate, channels, slice);
+        socket.send_to(packet, dest)?;
+        seq = seq.wrapping_add(1);
+    }
+    Ok(seq)
 }
 
 fn current_target(target: &Mutex<Option<(SocketAddr, Instant)>>) -> Option<SocketAddr> {

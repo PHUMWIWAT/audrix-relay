@@ -44,6 +44,19 @@ pub fn volume_bar() -> slider::Bar {
     slider::Bar { x: 220, y: 168, w: 360, h: 18 }
 }
 
+pub fn chunk_at(x: i32, y: i32) -> Option<u32> {
+    if y < 310 || y > 350 {
+        return None;
+    }
+    if (220..280).contains(&x) {
+        Some(5)
+    } else if (292..360).contains(&x) {
+        Some(10)
+    } else {
+        None
+    }
+}
+
 pub fn lang_at(x: i32, y: i32) -> Option<bool> {
     if y < 230 || y > 270 {
         return None;
@@ -136,6 +149,11 @@ unsafe fn settings(hdc: HDC, snap: &Snapshot) {
     let th = if snap.thai { rgb(0xE4, 0xDC, 0xCF) } else { rgb(0x8A, 0x80, 0x74) };
     paint::label(hdc, 220, 240, 18, en, "EN");
     paint::label(hdc, 292, 240, 18, th, "TH");
+    let pace = if snap.thai { "ขนาดก้อนเสียง" } else { "Chunk" };
+    let mode = if crate::capture::chunk_ms() <= 5 { "5 ms" } else { "10 ms" };
+    paint::label(hdc, 220, 290, 16, rgb(0x8A, 0x80, 0x74), &format!("{pace}  {mode}"));
+    paint::label(hdc, 220, 320, 18, rgb(0xE4, 0xDC, 0xCF), "5 ms");
+    paint::label(hdc, 292, 320, 18, rgb(0xE4, 0xDC, 0xCF), "10 ms");
 }
 
 unsafe fn about(hdc: HDC, snap: &Snapshot) {

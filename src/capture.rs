@@ -22,12 +22,11 @@ pub fn open_loopback() -> Result<Loopback, Box<dyn Error>> {
     let name = device.get_friendlyname()?;
     let mut client = device.get_iaudioclient()?;
     let format = client.get_mixformat()?;
-    let (default_period, min_period) = client.get_periods()?;
-    let period = if min_period > 0 {
-        min_period.clamp(100_000, default_period.max(100_000))
-    } else {
-        default_period
-    };
+    // Shared-mode loopback runs at the engine's default period. Asking for the
+    // hardware minimum makes the buffer smaller than one period, so a late
+    // read drops audio.
+    let (default_period, _min_period) = client.get_periods()?;
+    let period = default_period;
 
     // Render device plus capture direction is WASAPI loopback inside wasapi 0.12.
     // shortcut: wasapi 0.12, the GNU toolchain has no dlltool for wasapi 0.25.
@@ -94,6 +93,16 @@ pub fn read_pcm16(loopback: &mut Loopback, pcm: &mut Vec<i16>) -> Result<bool, B
 }
 
 static GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+static CHUNK_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(10);
+
+pub fn set_chunk_ms(ms: u32) {
+    let ms = if ms <= 5 { 5 } else { 10 };
+    CHUNK_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn chunk_ms() -> u32 {
+    CHUNK_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 pub fn set_gain_percent(percent: u32) {
     GAIN.store(percent.min(200), std::sync::atomic::Ordering::Relaxed);

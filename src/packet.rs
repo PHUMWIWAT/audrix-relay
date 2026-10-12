@@ -2,6 +2,25 @@ use std::error::Error;
 
 pub const PORT: u16 = 40123;
 pub const HEADER_LEN: usize = 10;
+/// Stay under a Wi-Fi MTU so one lost fragment does not throw away a whole packet.
+pub const MAX_DATAGRAM_BYTES: usize = 1200;
+
+pub fn max_payload_bytes(bytes_per_frame: usize) -> usize {
+    let budget = MAX_DATAGRAM_BYTES.saturating_sub(HEADER_LEN);
+    let frame = bytes_per_frame.max(1);
+    (budget / frame).max(1) * frame
+}
+
+/// Split `len` into equal frame-aligned pieces so every packet is the same size.
+pub fn even_split_bytes(len: usize, max_payload: usize, bytes_per_frame: usize) -> usize {
+    if len == 0 || max_payload == 0 {
+        return max_payload.max(1);
+    }
+    let packets = len.div_ceil(max_payload).max(1);
+    let frame = bytes_per_frame.max(1);
+    let ideal = len.div_ceil(packets);
+    (ideal.div_ceil(frame) * frame).min(max_payload)
+}
 pub const HELLO: &[u8] = b"AXDR";
 
 pub fn is_hello(data: &[u8]) -> bool {
@@ -9,14 +28,19 @@ pub fn is_hello(data: &[u8]) -> bool {
 }
 
 pub fn write_packet(buf: &mut Vec<u8>, seq: u32, sample_rate: u32, channels: u16, pcm: &[i16]) {
-    buf.resize(HEADER_LEN + pcm.len() * 2, 0);
+    let mut bytes = Vec::with_capacity(pcm.len() * 2);
+    for sample in pcm {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    write_pcm_bytes(buf, seq, sample_rate, channels, &bytes);
+}
+
+pub fn write_pcm_bytes(buf: &mut Vec<u8>, seq: u32, sample_rate: u32, channels: u16, pcm: &[u8]) {
+    buf.resize(HEADER_LEN + pcm.len(), 0);
     buf[0..4].copy_from_slice(&seq.to_le_bytes());
     buf[4..8].copy_from_slice(&sample_rate.to_le_bytes());
     buf[8..10].copy_from_slice(&channels.to_le_bytes());
-    for (i, sample) in pcm.iter().enumerate() {
-        let start = HEADER_LEN + i * 2;
-        buf[start..start + 2].copy_from_slice(&sample.to_le_bytes());
-    }
+    buf[HEADER_LEN..].copy_from_slice(pcm);
 }
 
 pub fn parse_packet(data: &[u8], samples: &mut Vec<i16>) -> Result<(u32, u32, u16), Box<dyn Error>> {
@@ -115,5 +139,17 @@ mod tests {
         assert_eq!(sample_rate, 48_000);
         assert_eq!(channels, 2);
         assert_eq!(samples, [1, -2, 3, 4]);
+    }
+
+    #[test]
+    fn a_ten_millisecond_chunk_splits_into_equal_packets() {
+        let bytes_per_frame = 4;
+        let len = 48_000 * bytes_per_frame * 10 / 1000;
+        let max_payload = super::max_payload_bytes(bytes_per_frame);
+        let per = super::even_split_bytes(len, max_payload, bytes_per_frame);
+        let sizes: Vec<_> = (0..len).step_by(per).map(|i| (len - i).min(per)).collect();
+        assert!(sizes.len() > 1);
+        assert!(sizes.iter().all(|size| size + super::HEADER_LEN <= super::MAX_DATAGRAM_BYTES));
+        assert!(sizes.windows(2).all(|pair| pair[0] == pair[1]));
     }
 }

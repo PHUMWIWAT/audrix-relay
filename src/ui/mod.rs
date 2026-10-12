@@ -263,6 +263,11 @@ fn on_click(hwnd: HWND, lparam: LPARAM, first: bool) {
             unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
             return;
         }
+        if let Some(ms) = screens::chunk_at(x, y) {
+            crate::capture::set_chunk_ms(ms);
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+            return;
+        }
         let bar = screens::volume_bar();
         if slider::contains(bar, x, y) {
             if first {
