@@ -1,7 +1,9 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
+mod install;
 mod logo;
 mod paint;
+mod screens;
 mod settings;
 mod slider;
 mod tray;
@@ -33,6 +35,8 @@ pub struct AppState {
     pub error: Option<String>,
     pub gain_percent: u32,
     pub thai: bool,
+    pub screen: screens::Screen,
+    pub notice: String,
 }
 
 impl Default for AppState {
@@ -45,6 +49,8 @@ impl Default for AppState {
             error: None,
             gain_percent: 100,
             thai: true,
+            screen: screens::Screen::Home,
+            notice: String::new(),
         }
     }
 }
@@ -57,6 +63,8 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub gain_percent: u32,
     pub thai: bool,
+    pub screen: screens::Screen,
+    pub notice: String,
 }
 
 fn state() -> &'static Mutex<AppState> {
@@ -142,8 +150,8 @@ unsafe fn run_window() {
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        440,
-        560,
+        860,
+        640,
         std::ptr::null_mut(),
         std::ptr::null_mut(),
         window_class.hInstance,
@@ -242,16 +250,49 @@ fn on_click(hwnd: HWND, lparam: LPARAM, first: bool) {
     let y = ((lparam >> 16) as i16) as i32;
     let mut rect: RECT = unsafe { std::mem::zeroed() };
     unsafe { winapi::um::winuser::GetClientRect(hwnd, &mut rect) };
-    if let Some(thai) = slider::lang_at(x, y, rect.right) {
-        set_thai(thai);
+    if let Some(screen) = screens::nav_at(x, y) {
+        lock().screen = screen;
         unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
         return;
     }
-    if slider::contains(x, y, rect.right, rect.bottom) {
-        if first {
-            unsafe { SetCapture(hwnd) };
+    let screen = lock().screen;
+    let thai = lock().thai;
+    if screen == screens::Screen::Settings {
+        if let Some(next) = screens::lang_at(x, y) {
+            set_thai(next);
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+            return;
         }
-        set_gain_percent(slider::percent_at(x, rect.right));
-        unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+        let bar = screens::volume_bar();
+        if slider::contains(bar, x, y) {
+            if first {
+                unsafe { SetCapture(hwnd) };
+            }
+            set_gain_percent(slider::percent_at(bar, x));
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+        }
+    }
+    if screen == screens::Screen::About {
+        if screens::install_at(x, y) {
+            let notice = match install::install() {
+                Ok(path) => if thai {
+                    format!("ติดตั้งแล้วที่ {path}")
+                } else {
+                    format!("Installed at {path}")
+                },
+                Err(err) => err,
+            };
+            lock().notice = notice;
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+        } else if screens::uninstall_at(x, y) {
+            let notice = match install::uninstall() {
+                Ok(()) => {
+                    if thai { "ถอนการติดตั้งแล้ว".into() } else { "Removed from the Start menu.".into() }
+                }
+                Err(err) => err,
+            };
+            lock().notice = notice;
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+        }
     }
 }

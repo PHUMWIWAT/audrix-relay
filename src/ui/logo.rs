@@ -42,6 +42,67 @@ pub unsafe fn draw(hdc: HDC, x: i32, y: i32, size: i32) {
     );
 }
 
+pub fn ico_bytes() -> Vec<u8> {
+    let pixels = sample32();
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.push(32);
+    out.push(32);
+    out.push(0);
+    out.push(0);
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    let image = dib32(&pixels);
+    out.extend_from_slice(&(image.len() as u32).to_le_bytes());
+    out.extend_from_slice(&22u32.to_le_bytes());
+    out.extend(image);
+    out
+}
+
+fn dib32(pixels: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&32i32.to_le_bytes());
+    out.extend_from_slice(&64i32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(32 * 32 * 4u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for y in (0..32).rev() {
+        let start = y * 32 * 4;
+        out.extend_from_slice(&pixels[start..start + 32 * 4]);
+    }
+    out.resize(out.len() + 128, 0);
+    out
+}
+
+fn sample32() -> Vec<u8> {
+    let mut pixels = vec![0u8; 32 * 32 * 4];
+    if LOGO.len() < 54 {
+        return pixels;
+    }
+    for y in 0..32 {
+        for x in 0..32 {
+            let src_row = 127 - y * 4;
+            let src = 54 + ((src_row * 128 + x * 4) * 4) as usize;
+            let dst = (y * 32 + x) * 4;
+            if src + 4 <= LOGO.len() {
+                pixels[dst] = LOGO[src];
+                pixels[dst + 1] = LOGO[src + 1];
+                pixels[dst + 2] = LOGO[src + 2];
+                pixels[dst + 3] = 255;
+            }
+        }
+    }
+    pixels
+}
+
 pub unsafe fn icon() -> HICON {
     if LOGO.len() < 54 {
         return std::ptr::null_mut();

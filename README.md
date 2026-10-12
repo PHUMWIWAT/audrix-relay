@@ -7,7 +7,7 @@ Nothing is uploaded. Audio stays on the local network as uncompressed PCM.
 ## Use it
 
 1. Put the PC and the phone on the same Wi-Fi.
-2. On the PC, run `AudrixRelay.exe` or `target\release\audrix-relay.exe`. The window shows the logo and this machine's IP. Closing the window hides it. Right-click the tray icon for Show, Hide, and Exit. Exit is what stops capture.
+2. On the PC, run `AudrixRelay.exe`. The window has Status, Settings, and About, in the same layout as a small desktop app. About has Install, which copies the program to `%LOCALAPPDATA%\AudrixRelay` and adds a Start menu shortcut with the logo. Closing the window hides it. Right-click the tray icon for Show, Hide, and Exit.
 3. On the phone, open Audrix Relay. Tap the PC in the list. The delay is shown in milliseconds on both screens. The PC window has a volume slider from 0 to 200 percent. Samples stay as captured. Only a peak that is already louder than 16-bit can store is limited. EN and TH switch the words on both apps.
 4. Leave the phone app. Playback continues. Tap **หยุด** in the app, or **หยุด** on the notification, to disconnect. The phone keeps looking for PCs.
 

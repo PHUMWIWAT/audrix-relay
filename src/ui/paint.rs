@@ -9,7 +9,7 @@ use winapi::um::winuser::{
     BeginPaint, DrawTextW, EndPaint, FillRect, GetClientRect, DT_LEFT, DT_SINGLELINE,
 };
 
-use super::{lock, logo, rgb, slider, wide, Snapshot};
+use super::{lock, rgb, wide, Snapshot};
 
 pub unsafe fn paint(hwnd: HWND) {
     let mut paint_struct = std::mem::zeroed();
@@ -34,42 +34,11 @@ pub unsafe fn paint(hwnd: HWND) {
         error: state.error.clone(),
         gain_percent: state.gain_percent,
         thai: state.thai,
+        screen: state.screen,
+        notice: state.notice.clone(),
     };
     drop(state);
-    let waiting = if snapshot.thai { "รอให้มือถือเลือกเครื่องนี้" } else { "Waiting for a phone" };
-
-    logo::draw(mem, 36, 36, 84);
-    text(mem, 136, 52, 28, rgb(0xE4, 0xDC, 0xCF), true, "Audrix");
-    let rule = RECT { left: 136, top: 96, right: 208, bottom: 98 };
-    let oxblood = CreateSolidBrush(rgb(0x7C, 0x30, 0x30));
-    FillRect(mem, &rule, oxblood);
-    DeleteObject(oxblood as *mut _);
-    let mut y = 156;
-
-    if let Some(ms) = snapshot.rtt_ms {
-        let number = ms.to_string();
-        let width = text(mem, 36, y, 84, rgb(0xE4, 0xDC, 0xCF), true, &number);
-        text(mem, 36 + width + 14, y + 52, 22, rgb(0x8A, 0x80, 0x74), true, "ms");
-        y += 110;
-        if let Some(peer) = snapshot.peer {
-            text(mem, 36, y, 18, rgb(0x8A, 0x80, 0x74), false, &peer);
-        }
-    } else {
-        text(mem, 36, y, 36, rgb(0xE4, 0xDC, 0xCF), true, &snapshot.ip);
-        y += 64;
-        text(mem, 36, y, 18, rgb(0x8A, 0x80, 0x74), false, waiting);
-    }
-    let en_color = if snapshot.thai { rgb(0x8A, 0x80, 0x74) } else { rgb(0xE4, 0xDC, 0xCF) };
-    let th_color = if snapshot.thai { rgb(0xE4, 0xDC, 0xCF) } else { rgb(0x8A, 0x80, 0x74) };
-    text(mem, 300, 48, 16, en_color, false, "EN");
-    text(mem, 348, 48, 16, th_color, false, "TH");
-    slider::draw(mem, width, height, snapshot.gain_percent, snapshot.thai);
-
-    if let Some(error) = snapshot.error {
-        text(mem, 36, height - 96, 16, rgb(0x7C, 0x30, 0x30), false, &error);
-    } else if !snapshot.device.is_empty() {
-        text(mem, 36, height - 64, 16, rgb(0x8A, 0x80, 0x74), false, &snapshot.device);
-    }
+    super::screens::draw(mem, width, height, &snapshot);
 
     BitBlt(hdc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);
