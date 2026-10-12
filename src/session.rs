@@ -10,7 +10,9 @@ use crate::packet::{self, LossCount, PORT};
 use crate::ui;
 
 const PACKETS_TO_SEND: u32 = 50;
-const TARGET_TIMEOUT: Duration = Duration::from_secs(5);
+// A missed keepalive must not end the session. The phone retries; only a
+// long silence means it is actually gone.
+const TARGET_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn serve() -> Result<(), Box<dyn Error>> {
     let ip = primary_ipv4()?;
@@ -25,6 +27,7 @@ pub fn serve() -> Result<(), Box<dyn Error>> {
     })?;
     socket.set_read_timeout(Some(Duration::from_millis(200)))?;
     let socket = Arc::new(socket);
+    let audio = Arc::new(UdpSocket::bind("0.0.0.0:0")?);
     let target = Arc::new(Mutex::new(None::<(SocketAddr, Instant)>));
 
     let listen_socket = Arc::clone(&socket);
@@ -32,7 +35,7 @@ pub fn serve() -> Result<(), Box<dyn Error>> {
     let listen_running = Arc::clone(&running);
     std::thread::spawn(move || listen_for_phones(listen_socket, listen_target, listen_running));
 
-    let send_socket = Arc::clone(&socket);
+    let send_socket = audio;
     let send_target = Arc::clone(&target);
     let send_running = Arc::clone(&running);
     std::thread::spawn(move || {

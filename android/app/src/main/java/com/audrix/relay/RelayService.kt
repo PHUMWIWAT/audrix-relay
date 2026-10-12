@@ -13,6 +13,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.SystemClock
 import java.net.DatagramPacket
@@ -33,6 +34,7 @@ class RelayService : Service() {
     private var trackRate = 0
     private var trackChannels = 0
     private var focus: AudioFocusRequest? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     @Volatile private var host: String = ""
 
     override fun onBind(intent: Intent?) = null
@@ -42,6 +44,7 @@ class RelayService : Service() {
             host = ""
             connectedIp = null
             delayMs = null
+            releaseWifi()
             val note = notification(Copy.searching())
             getSystemService(NotificationManager::class.java).notify(NOTE_ID, note)
             return START_STICKY
@@ -51,6 +54,9 @@ class RelayService : Service() {
             host = ip
             connectedIp = ip
             requestFocus()
+            holdWifi()
+        } else {
+            releaseWifi()
         }
         val note = notification(if (host.isEmpty()) Copy.searching() else Copy.connecting())
         if (Build.VERSION.SDK_INT >= 29) {
@@ -62,7 +68,22 @@ class RelayService : Service() {
             running = true
             player = Thread({ runCatching { playLoop() } }, "relay-play")
             player?.start()
-            worker = Thread({ runCatching { listen() }.onFailure { status = "เชื่อมไม่ได้\n${it.message}" } }, "relay-udp")
+            worker = Thread({
+                var attempt = 0
+                while (running) {
+                    try {
+                        listen()
+                        break
+                    } catch (err: Exception) {
+                        if (!running || host.isEmpty()) {
+                            break
+                        }
+                        status = "เชื่อมใหม่\n${err.message}"
+                        Thread.sleep(ReconnectBackoff.delayMsFor(attempt))
+                        attempt += 1
+                    }
+                }
+            }, "relay-udp")
             worker?.start()
         }
         return START_STICKY
@@ -74,6 +95,7 @@ class RelayService : Service() {
         worker?.join(1500)
         player?.join(1500)
         releaseTrack()
+        releaseWifi()
         focus?.let { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(it) }
         super.onDestroy()
     }
@@ -126,7 +148,10 @@ class RelayService : Service() {
                     packet.length
                 } catch (_: SocketTimeoutException) {
                     continue
-                } catch (_: Exception) {
+                } catch (err: Exception) {
+                    if (running && host.isNotEmpty()) {
+                        throw err
+                    }
                     break
                 }
                 if (size >= 4 && buffer.copyOfRange(0, 4).contentEquals("HERE".toByteArray())) {
@@ -253,6 +278,32 @@ class RelayService : Service() {
             return null
         }
         return opened
+    }
+
+    private fun holdWifi() {
+        if (wifiLock?.isHeld == true) {
+            return
+        }
+        val wifi = applicationContext.getSystemService(WifiManager::class.java) ?: return
+        val mode = if (Build.VERSION.SDK_INT >= 29) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            @Suppress("DEPRECATION")
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = wifi.createWifiLock(mode, "audrix-relay").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWifi() {
+        wifiLock?.let { lock ->
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+        wifiLock = null
     }
 
     private fun requestFocus() {
