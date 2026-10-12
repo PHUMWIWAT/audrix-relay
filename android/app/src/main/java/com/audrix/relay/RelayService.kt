@@ -28,11 +28,11 @@ class RelayService : Service() {
     private var worker: Thread? = null
     @Volatile private var running = false
     @Volatile private var socket: DatagramSocket? = null
-    private val queue = PcmQueue()
+    private var jitter: JitterBuffer? = null
+    private var playback: PlaybackTrack? = null
+    private var playbackRate = 0
+    private var playbackChannels = 0
     private var player: Thread? = null
-    private var track: AudioTrack? = null
-    private var trackRate = 0
-    private var trackChannels = 0
     private var focus: AudioFocusRequest? = null
     private var wifiLock: WifiManager.WifiLock? = null
     @Volatile private var host: String = ""
@@ -115,7 +115,7 @@ class RelayService : Service() {
         var lastNote = 0L
         try {
             while (running) {
-                if (host.isEmpty() && track != null) {
+                if (host.isEmpty() && playback != null) {
                     releaseTrack()
                 }
                 val now = SystemClock.elapsedRealtime()
@@ -171,7 +171,7 @@ class RelayService : Service() {
                     }
                     continue
                 }
-                if (host.isEmpty() && track != null) {
+                if (host.isEmpty() && playback != null) {
                     releaseTrack()
                 }
                 val parsed = parsePacket(buffer, size) ?: continue
@@ -179,7 +179,8 @@ class RelayService : Service() {
                     continue
                 }
                 loss.observe(parsed.seq)
-                queue.push(parsed.seq.toLong(), soften(parsed))
+                ensurePlayback(parsed.sampleRate, parsed.channels)
+                jitter?.push(parsed.seq, pcmBytes(parsed.pcm))
                 status = "${Copy.playingShort()}\n${parsed.sampleRate} Hz"
                 if (now - lastNote > 1000) {
                     val delay = delayMs?.let { "$it ms" } ?: Copy.playingShort()
@@ -216,68 +217,46 @@ class RelayService : Service() {
     private fun playLoop() {
         while (running) {
             if (host.isEmpty()) {
-                queue.clear()
                 releaseTrack()
                 Thread.sleep(20)
                 continue
             }
-            val chunk = queue.pop()
+            val chunk = jitter?.pop()
             if (chunk == null) {
-                Thread.sleep(2)
+                Thread.sleep(5)
                 continue
             }
-            writeChunk(chunk)
+            if (playback?.write(chunk) == PlaybackTrack.WriteResult.FAILED) {
+                Thread.sleep(20)
+            }
         }
     }
 
-    private fun soften(parsed: PcmPacket): PcmChunk {
-        val pcm = ShortArray(parsed.pcm.size)
-        for (i in parsed.pcm.indices) {
-            pcm[i] = (parsed.pcm[i] * SPEAKER_GAIN).toInt().toShort()
+    private fun ensurePlayback(sampleRate: Int, channels: Int) {
+        if (jitter != null && playbackRate == sampleRate && playbackChannels == channels) {
+            return
         }
-        return PcmChunk(pcm, parsed.sampleRate, parsed.channels)
+        releaseTrack()
+        val bytesPerFrame = channels * 2
+        jitter = JitterBuffer(
+            chunkSizeBytes = sampleRate / 100 * bytesPerFrame,
+            bytesPerFrame = bytesPerFrame,
+            targetDepthMs = 80,
+            bytesPerMs = sampleRate * bytesPerFrame / 1000,
+        )
+        playback = PlaybackTrack(sampleRate, channels).also { it.play() }
+        playbackRate = sampleRate
+        playbackChannels = channels
     }
 
-    private fun writeChunk(chunk: PcmChunk) {
-        val mask = when (chunk.channels) {
-            1 -> AudioFormat.CHANNEL_OUT_MONO
-            2 -> AudioFormat.CHANNEL_OUT_STEREO
-            else -> return
+    private fun pcmBytes(samples: ShortArray): ByteArray {
+        val out = ByteArray(samples.size * 2)
+        for (i in samples.indices) {
+            val value = (samples[i] * SPEAKER_GAIN).toInt().toShort().toInt()
+            out[i * 2] = (value and 0xff).toByte()
+            out[i * 2 + 1] = (value shr 8 and 0xff).toByte()
         }
-        if (track == null || trackRate != chunk.sampleRate || trackChannels != chunk.channels) {
-            releaseTrack()
-            val frameBytes = chunk.channels * 2
-            val want = (chunk.sampleRate * frameBytes * 40 / 1000).coerceAtLeast(frameBytes * 64)
-            track = openTrack(chunk.sampleRate, mask, want)
-            track?.play()
-            trackRate = chunk.sampleRate
-            trackChannels = chunk.channels
-        }
-        track?.write(chunk.pcm, 0, chunk.pcm.size, AudioTrack.WRITE_BLOCKING)
-    }
-
-    private fun openTrack(sampleRate: Int, mask: Int, bufferBytes: Int): AudioTrack? {
-        if (bufferBytes <= 0) {
-            return null
-        }
-        val opened = AudioTrack.Builder()
-            .setAudioAttributes(mediaAttributes())
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(sampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(mask)
-                    .build(),
-            )
-            .setBufferSizeInBytes(bufferBytes)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .build()
-        if (opened.state != AudioTrack.STATE_INITIALIZED) {
-            opened.release()
-            return null
-        }
-        return opened
+        return out
     }
 
     private fun holdWifi() {
@@ -322,15 +301,11 @@ class RelayService : Service() {
     }
 
     private fun releaseTrack() {
-        val current = track ?: return
-        track = null
-        trackRate = 0
-        trackChannels = 0
-        try {
-            current.pause()
-        } catch (_: IllegalStateException) {
-        }
-        current.release()
+        jitter = null
+        playback?.shutdown()
+        playback = null
+        playbackRate = 0
+        playbackChannels = 0
     }
 
     private fun notification(text: String): Notification {
