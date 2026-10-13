@@ -28,10 +28,7 @@ class RelayService : Service() {
     private var worker: Thread? = null
     @Volatile private var running = false
     @Volatile private var socket: DatagramSocket? = null
-    private var jitter: JitterBuffer? = null
-    private var playback: PlaybackTrack? = null
-    private var playbackRate = 0
-    private var playbackChannels = 0
+    private val playback = PlaybackSession()
     private var player: Thread? = null
     private var focus: AudioFocusRequest? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -115,7 +112,7 @@ class RelayService : Service() {
         var lastNote = 0L
         try {
             while (running) {
-                if (host.isEmpty() && playback != null) {
+                if (host.isEmpty() && playback.isActive()) {
                     releaseTrack()
                 }
                 val now = SystemClock.elapsedRealtime()
@@ -171,7 +168,7 @@ class RelayService : Service() {
                     }
                     continue
                 }
-                if (host.isEmpty() && playback != null) {
+                if (host.isEmpty() && playback.isActive()) {
                     releaseTrack()
                 }
                 val parsed = parsePacket(buffer, size) ?: continue
@@ -179,8 +176,7 @@ class RelayService : Service() {
                     continue
                 }
                 loss.observe(parsed.seq)
-                ensurePlayback(parsed.sampleRate, parsed.channels)
-                jitter?.push(parsed.seq, pcmBytes(parsed.pcm))
+                playback.offer(parsed.seq, parsed.pcm, parsed.sampleRate, parsed.channels)
                 status = "${Copy.playingShort()}\n${parsed.sampleRate} Hz"
                 if (now - lastNote > 1000) {
                     val delay = delayMs?.let { "$it ms" } ?: Copy.playingShort()
@@ -217,46 +213,16 @@ class RelayService : Service() {
     private fun playLoop() {
         while (running) {
             if (host.isEmpty()) {
-                releaseTrack()
+                playback.stop()
                 Thread.sleep(20)
                 continue
             }
-            val chunk = jitter?.pop()
-            if (chunk == null) {
-                Thread.sleep(5)
-                continue
-            }
-            if (playback?.write(chunk) == PlaybackTrack.WriteResult.FAILED) {
-                Thread.sleep(20)
+            when (playback.playNext()) {
+                null -> Thread.sleep(5)
+                PlaybackTrack.WriteResult.FAILED -> Thread.sleep(20)
+                else -> {}
             }
         }
-    }
-
-    private fun ensurePlayback(sampleRate: Int, channels: Int) {
-        if (jitter != null && playbackRate == sampleRate && playbackChannels == channels) {
-            return
-        }
-        releaseTrack()
-        val bytesPerFrame = channels * 2
-        jitter = JitterBuffer(
-            chunkSizeBytes = sampleRate / 100 * bytesPerFrame,
-            bytesPerFrame = bytesPerFrame,
-            targetDepthMs = 80,
-            bytesPerMs = sampleRate * bytesPerFrame / 1000,
-        )
-        playback = PlaybackTrack(sampleRate, channels).also { it.play() }
-        playbackRate = sampleRate
-        playbackChannels = channels
-    }
-
-    private fun pcmBytes(samples: ShortArray): ByteArray {
-        val out = ByteArray(samples.size * 2)
-        for (i in samples.indices) {
-            val value = (samples[i] * SPEAKER_GAIN).toInt().toShort().toInt()
-            out[i * 2] = (value and 0xff).toByte()
-            out[i * 2 + 1] = (value shr 8 and 0xff).toByte()
-        }
-        return out
     }
 
     private fun holdWifi() {
@@ -301,11 +267,7 @@ class RelayService : Service() {
     }
 
     private fun releaseTrack() {
-        jitter = null
-        playback?.shutdown()
-        playback = null
-        playbackRate = 0
-        playbackChannels = 0
+        playback.stop()
     }
 
     private fun notification(text: String): Notification {
@@ -338,7 +300,6 @@ class RelayService : Service() {
         const val ACTION_STOP = "stop"
         const val ACTION_DISCONNECT = "disconnect"
         const val PORT = 40123
-        private const val SPEAKER_GAIN = 0.71f
         private const val CHANNEL = "relay"
         private const val NOTE_ID = 1
         private val HELLO = byteArrayOf(0x41, 0x58, 0x44, 0x52)

@@ -26,6 +26,45 @@ impl Screen {
     }
 }
 
+pub enum Hit {
+    Nav(Screen),
+    Lang(bool),
+    Chunk(u32),
+    Volume(u32),
+    Install,
+    Uninstall,
+}
+
+pub fn hit(screen: Screen, x: i32, y: i32) -> Option<Hit> {
+    if let Some(nav) = nav_at(x, y) {
+        return Some(Hit::Nav(nav));
+    }
+    match screen {
+        Screen::Settings => {
+            if let Some(thai) = lang_at(x, y) {
+                return Some(Hit::Lang(thai));
+            }
+            if let Some(ms) = chunk_at(x, y) {
+                return Some(Hit::Chunk(ms));
+            }
+            let bar = volume_bar();
+            if slider::contains(bar, x, y) {
+                return Some(Hit::Volume(slider::percent_at(bar, x)));
+            }
+        }
+        Screen::About => {
+            if install_at(x, y) {
+                return Some(Hit::Install);
+            }
+            if uninstall_at(x, y) {
+                return Some(Hit::Uninstall);
+            }
+        }
+        Screen::Home => {}
+    }
+    None
+}
+
 pub fn nav_at(x: i32, y: i32) -> Option<Screen> {
     if x >= NAV_W {
         return None;
@@ -186,4 +225,28 @@ unsafe fn button(hdc: HDC, x: i32, y: i32, w: i32, h: i32, label: &str) {
     FillRect(hdc, &rect, brush);
     DeleteObject(brush as *mut _);
     paint::label(hdc, x + 16, y + 10, 16, rgb(0xE4, 0xDC, 0xCF), label);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hit, Screen, hit};
+
+    #[test]
+    fn about_owns_the_install_click() {
+        assert!(matches!(hit(Screen::About, 230, 260), Some(Hit::Install)));
+        assert!(matches!(hit(Screen::Home, 230, 260), None));
+    }
+
+    #[test]
+    fn settings_owns_language_chunk_and_volume() {
+        assert!(matches!(hit(Screen::Settings, 230, 250), Some(Hit::Lang(false))));
+        assert!(matches!(hit(Screen::Settings, 300, 250), Some(Hit::Lang(true))));
+        assert!(matches!(hit(Screen::Settings, 230, 330), Some(Hit::Chunk(5))));
+        assert!(matches!(hit(Screen::Settings, 400, 176), Some(Hit::Volume(_))));
+    }
+
+    #[test]
+    fn the_left_rail_owns_navigation() {
+        assert!(matches!(hit(Screen::Home, 30, 120), Some(Hit::Nav(Screen::Home))));
+    }
 }

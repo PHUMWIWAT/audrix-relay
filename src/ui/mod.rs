@@ -250,54 +250,45 @@ fn on_click(hwnd: HWND, lparam: LPARAM, first: bool) {
     let y = ((lparam >> 16) as i16) as i32;
     let mut rect: RECT = unsafe { std::mem::zeroed() };
     unsafe { winapi::um::winuser::GetClientRect(hwnd, &mut rect) };
-    if let Some(screen) = screens::nav_at(x, y) {
-        lock().screen = screen;
-        unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
-        return;
-    }
     let screen = lock().screen;
     let thai = lock().thai;
-    if screen == screens::Screen::Settings {
-        if let Some(next) = screens::lang_at(x, y) {
-            set_thai(next);
-            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
-            return;
-        }
-        if let Some(ms) = screens::chunk_at(x, y) {
-            crate::capture::set_chunk_ms(ms);
-            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
-            return;
-        }
-        let bar = screens::volume_bar();
-        if slider::contains(bar, x, y) {
+    let Some(hit) = screens::hit(screen, x, y) else {
+        return;
+    };
+    match hit {
+        screens::Hit::Nav(next) => lock().screen = next,
+        screens::Hit::Lang(next) => set_thai(next),
+        screens::Hit::Chunk(ms) => crate::capture::set_chunk_ms(ms),
+        screens::Hit::Volume(percent) => {
             if first {
                 unsafe { SetCapture(hwnd) };
             }
-            set_gain_percent(slider::percent_at(bar, x));
-            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+            set_gain_percent(percent);
         }
-    }
-    if screen == screens::Screen::About {
-        if screens::install_at(x, y) {
-            let notice = match install::install() {
-                Ok(path) => if thai {
-                    format!("ติดตั้งแล้วที่ {path}")
-                } else {
-                    format!("Installed at {path}")
-                },
-                Err(err) => err,
-            };
-            lock().notice = notice;
-            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
-        } else if screens::uninstall_at(x, y) {
-            let notice = match install::uninstall() {
-                Ok(()) => {
-                    if thai { "ถอนการติดตั้งแล้ว".into() } else { "Removed from the Start menu.".into() }
+        screens::Hit::Install => {
+            lock().notice = match install::install() {
+                Ok(path) => {
+                    if thai {
+                        format!("ติดตั้งแล้วที่ {path}")
+                    } else {
+                        format!("Installed at {path}")
+                    }
                 }
                 Err(err) => err,
             };
-            lock().notice = notice;
-            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+        }
+        screens::Hit::Uninstall => {
+            lock().notice = match install::uninstall() {
+                Ok(()) => {
+                    if thai {
+                        "ถอนการติดตั้งแล้ว".into()
+                    } else {
+                        "Removed from the Start menu.".into()
+                    }
+                }
+                Err(err) => err,
+            };
         }
     }
+    unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
 }

@@ -1,7 +1,6 @@
 package com.audrix.relay
 
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -20,15 +19,8 @@ class PacketTest {
 
     @Test
     fun parseReadsLittleEndianHeaderAndSamples() {
-        val bytes = ByteBuffer.allocate(18).order(ByteOrder.LITTLE_ENDIAN)
-        bytes.putInt(7)
-        bytes.putInt(48000)
-        bytes.putShort(2)
-        bytes.putShort(1)
-        bytes.putShort(-2)
-        bytes.putShort(3)
-        bytes.putShort(4)
-        val parsed = parsePacket(bytes.array(), bytes.array().size)
+        val bytes = sample("valid.bin")
+        val parsed = parsePacket(bytes, bytes.size)
         requireNotNull(parsed)
         assertEquals(7u, parsed.seq)
         assertEquals(48000, parsed.sampleRate)
@@ -39,6 +31,19 @@ class PacketTest {
 
     @Test
     fun parseRejectsAShortHeader() {
-        assertNull(parsePacket(ByteArray(6), 6))
+        val bytes = sample("short.bin")
+        assertNull(parsePacket(bytes, bytes.size))
+    }
+
+    private fun sample(name: String): ByteArray {
+        var dir = File(System.getProperty("user.dir"))
+        repeat(5) {
+            val candidate = File(dir, "dosc/packet-samples/$name")
+            if (candidate.exists()) {
+                return candidate.readBytes()
+            }
+            dir = dir.parentFile ?: return@repeat
+        }
+        error("missing dosc/packet-samples/$name from ${System.getProperty("user.dir")}")
     }
 }

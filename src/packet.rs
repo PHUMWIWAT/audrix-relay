@@ -131,14 +131,18 @@ mod tests {
 
     #[test]
     fn packet_roundtrip_keeps_sequence_and_samples() {
+        let shared = include_bytes!("../dosc/packet-samples/valid.bin");
         let mut buf = Vec::new();
         write_packet(&mut buf, 7, 48_000, 2, &[1, -2, 3, 4]);
+        assert_eq!(buf, shared);
         let mut samples = Vec::new();
-        let (seq, sample_rate, channels) = parse_packet(&buf, &mut samples).unwrap();
+        let (seq, sample_rate, channels) = parse_packet(shared, &mut samples).unwrap();
         assert_eq!(seq, 7);
         assert_eq!(sample_rate, 48_000);
         assert_eq!(channels, 2);
         assert_eq!(samples, [1, -2, 3, 4]);
+        let short = include_bytes!("../dosc/packet-samples/short.bin");
+        assert!(parse_packet(short, &mut samples).is_err());
     }
 
     #[test]

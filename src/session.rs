@@ -59,26 +59,11 @@ fn capture_send(
     if loopback.bytes_per_frame != loopback.channels as usize * 4 {
         return Err("mix format is not f32".into());
     }
-    let mut seq = 0u32;
-    let mut pcm = Vec::new();
-    let mut packet = Vec::new();
-    let mut queued: VecDeque<u8> = VecDeque::new();
+    let mut pump = PcmPump::default();
     let mut active: Option<SocketAddr> = None;
-    let bytes_per_frame = (loopback.channels as usize).max(1) * 2;
     while running.load(Ordering::Relaxed) {
-        match capture::read_pcm16(&mut loopback, &mut pcm) {
-            Ok(false) => continue,
-            Ok(true) => {}
-            Err(err) if err.to_string().contains("Wait timed out") => continue,
-            Err(err) => return Err(err),
-        }
-        for sample in &pcm {
-            queued.extend(sample.to_le_bytes());
-        }
-        let chunk_bytes = chunk_bytes(loopback.sample_rate, bytes_per_frame);
-        let cap = chunk_bytes.saturating_mul(4);
-        while cap > 0 && queued.len() > cap {
-            queued.drain(..bytes_per_frame.min(queued.len()));
+        if let Err(err) = pump.read(&mut loopback, true) {
+            return Err(err);
         }
         let dest = current_target(&target);
         let Some(dest) = dest else {
@@ -87,26 +72,15 @@ fn capture_send(
                 ui::set_rtt(None);
             }
             active = None;
-            queued.clear();
+            pump.clear();
             continue;
         };
         if active != Some(dest) {
-            seq = 0;
+            pump.reset_seq();
             active = Some(dest);
             ui::set_peer(Some(dest.ip().to_string()));
         }
-        while chunk_bytes > 0 && queued.len() >= chunk_bytes {
-            let chunk: Vec<u8> = queued.drain(..chunk_bytes).collect();
-            seq = send_chunk(
-                &socket,
-                dest,
-                seq,
-                loopback.sample_rate,
-                loopback.channels,
-                &chunk,
-                &mut packet,
-            )?;
-        }
+        pump.drain(&socket, dest, loopback.sample_rate, loopback.channels, None)?;
     }
     loopback.client.stop_stream()?;
     Ok(())
@@ -149,32 +123,115 @@ fn listen_for_phones(
     }
 }
 
+#[derive(Default)]
+struct PcmPump {
+    seq: u32,
+    sent: u32,
+    queued: VecDeque<u8>,
+    packet: Vec<u8>,
+    said_waiting: bool,
+}
+
+impl PcmPump {
+    fn reset_seq(&mut self) {
+        self.seq = 0;
+    }
+
+    fn clear(&mut self) {
+        self.queued.clear();
+    }
+
+    fn read(&mut self, loopback: &mut capture::Loopback, wait_forever: bool) -> Result<(), Box<dyn Error>> {
+        let mut pcm = Vec::new();
+        match capture::read_pcm16(loopback, &mut pcm) {
+            Ok(false) => Ok(()),
+            Ok(true) => {
+                for sample in pcm {
+                    self.queued.extend(sample.to_le_bytes());
+                }
+                Ok(())
+            }
+            Err(err) if wait_forever && err.to_string().contains("Wait timed out") => {
+                if !self.said_waiting {
+                    println!("ยังไม่มีเสียงจากอุปกรณ์ เปิดเสียงบน PC แล้วรอ");
+                    self.said_waiting = true;
+                }
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn drain(
+        &mut self,
+        socket: &UdpSocket,
+        dest: SocketAddr,
+        sample_rate: u32,
+        channels: u16,
+        limit: Option<u32>,
+    ) -> Result<bool, Box<dyn Error>> {
+        let bytes_per_frame = (channels as usize).max(1) * 2;
+        let chunk_bytes = chunk_bytes(sample_rate, bytes_per_frame);
+        let cap = chunk_bytes.saturating_mul(4);
+        while cap > 0 && self.queued.len() > cap {
+            self.queued.drain(..bytes_per_frame.min(self.queued.len()));
+        }
+        while chunk_bytes > 0 && self.queued.len() >= chunk_bytes {
+            let chunk: Vec<u8> = self.queued.drain(..chunk_bytes).collect();
+            let room = limit.map(|max| max.saturating_sub(self.sent));
+            let (next, wrote) = send_limited(
+                socket,
+                dest,
+                self.seq,
+                sample_rate,
+                channels,
+                &chunk,
+                &mut self.packet,
+                room,
+            )?;
+            self.seq = next;
+            self.sent += wrote;
+            if limit.is_some_and(|max| self.sent >= max) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+fn send_limited(
+    socket: &UdpSocket,
+    dest: SocketAddr,
+    seq: u32,
+    sample_rate: u32,
+    channels: u16,
+    chunk: &[u8],
+    packet: &mut Vec<u8>,
+    room: Option<u32>,
+) -> Result<(u32, u32), Box<dyn Error>> {
+    let bytes_per_frame = (channels as usize).max(1) * 2;
+    let max_payload = packet::max_payload_bytes(bytes_per_frame);
+    let per = packet::even_split_bytes(chunk.len(), max_payload, bytes_per_frame).max(1);
+    let mut seq = seq;
+    let mut wrote = 0u32;
+    for slice in chunk.chunks(per) {
+        if room.is_some_and(|left| wrote >= left) {
+            break;
+        }
+        packet::write_pcm_bytes(packet, seq, sample_rate, channels, slice);
+        socket.send_to(packet, dest)?;
+        seq = seq.wrapping_add(1);
+        wrote += 1;
+    }
+    Ok((seq, wrote))
+}
+
 fn chunk_bytes(sample_rate: u32, bytes_per_frame: usize) -> usize {
     let ms = capture::chunk_ms();
     (sample_rate as usize)
         .saturating_mul(bytes_per_frame)
         .saturating_mul(ms as usize)
         / 1000
-}
-
-fn send_chunk(
-    socket: &UdpSocket,
-    dest: SocketAddr,
-    mut seq: u32,
-    sample_rate: u32,
-    channels: u16,
-    chunk: &[u8],
-    packet: &mut Vec<u8>,
-) -> Result<u32, Box<dyn Error>> {
-    let bytes_per_frame = (channels as usize).max(1) * 2;
-    let max_payload = packet::max_payload_bytes(bytes_per_frame);
-    let per = packet::even_split_bytes(chunk.len(), max_payload, bytes_per_frame).max(1);
-    for slice in chunk.chunks(per) {
-        packet::write_pcm_bytes(packet, seq, sample_rate, channels, slice);
-        socket.send_to(packet, dest)?;
-        seq = seq.wrapping_add(1);
-    }
-    Ok(seq)
 }
 
 fn current_target(target: &Mutex<Option<(SocketAddr, Instant)>>) -> Option<SocketAddr> {
@@ -215,49 +272,36 @@ pub fn send(ip: IpAddr, limit: Option<u32>) -> Result<(), Box<dyn Error>> {
         IpAddr::from([0, 0, 0, 0, 0, 0, 0, 0])
     };
     let socket = UdpSocket::bind(SocketAddr::new(bind_ip, 0))?;
-    let mut seq = 0u32;
-    let mut pcm = Vec::new();
-    let mut packet_buf = Vec::new();
+    let mut pump = PcmPump::default();
     let mut attempts = 0u32;
-    let mut said_waiting = false;
     println!("ส่งไป {dest}");
     if limit.is_none() {
         println!("กด Ctrl+C เพื่อหยุด");
     }
-    while limit.is_none_or(|max| seq < max) {
+    while limit.is_none_or(|max| pump.sent < max) {
         if limit.is_some() {
             attempts += 1;
             if attempts > PACKETS_TO_SEND * 4 {
                 return Err("capture stalled before 50 packets".into());
             }
         }
-        match capture::read_pcm16(&mut loopback, &mut pcm) {
-            Ok(false) => continue,
-            Ok(true) => {}
-            Err(err) if limit.is_none() && err.to_string().contains("Wait timed out") => {
-                if !said_waiting {
-                    println!("ยังไม่มีเสียงจากอุปกรณ์ เปิดเสียงบน PC แล้วรอ");
-                    said_waiting = true;
-                }
-                continue;
-            }
-            Err(err) => return Err(err),
-        }
-        packet::write_packet(
-            &mut packet_buf,
-            seq,
+        pump.read(&mut loopback, limit.is_none())?;
+        let done = pump.drain(
+            &socket,
+            dest,
             loopback.sample_rate,
             loopback.channels,
-            &pcm,
-        );
-        socket.send_to(&packet_buf, dest)?;
-        seq += 1;
-        if seq.is_multiple_of(50) {
-            println!("ส่งแล้ว {seq} แพ็กเก็ต");
+            limit,
+        )?;
+        if done {
+            break;
+        }
+        if pump.sent.is_multiple_of(50) && pump.sent > 0 {
+            println!("ส่งแล้ว {} แพ็กเก็ต", pump.sent);
         }
     }
     loopback.client.stop_stream()?;
-    println!("packets_sent: {seq}");
+    println!("packets_sent: {}", pump.sent);
     println!("dest: {dest}");
     Ok(())
 }
