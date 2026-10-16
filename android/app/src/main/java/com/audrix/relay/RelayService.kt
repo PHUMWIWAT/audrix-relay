@@ -16,6 +16,7 @@ import android.media.AudioTrack
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -63,7 +64,7 @@ class RelayService : Service() {
         }
         if (worker?.isAlive != true) {
             running = true
-            player = Thread({ runCatching { playLoop() } }, "relay-play")
+            player = Thread({ playLoop() }, "relay-play")
             player?.start()
             worker = Thread({
                 var attempt = 0
@@ -212,15 +213,22 @@ class RelayService : Service() {
 
     private fun playLoop() {
         while (running) {
-            if (host.isEmpty()) {
-                playback.stop()
-                Thread.sleep(20)
-                continue
-            }
-            when (playback.playNext()) {
-                null -> Thread.sleep(5)
-                PlaybackTrack.WriteResult.FAILED -> Thread.sleep(20)
-                else -> {}
+            // One bad chunk must not end the thread: the UI would still show
+            // the PC as connected while nothing plays.
+            try {
+                if (host.isEmpty()) {
+                    playback.stop()
+                    Thread.sleep(20)
+                    continue
+                }
+                when (playback.playNext()) {
+                    null -> Thread.sleep(5)
+                    PlaybackTrack.WriteResult.FAILED -> Thread.sleep(20)
+                    else -> {}
+                }
+            } catch (err: Exception) {
+                Log.w("RelayService", "playback step failed", err)
+                runCatching { Thread.sleep(20) }
             }
         }
     }
