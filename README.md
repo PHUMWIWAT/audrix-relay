@@ -8,7 +8,7 @@ Audrix Relay plays what you hear on a Windows PC through an Android phone on the
 
 Audio stays on the local network as 16-bit PCM. Nothing is uploaded.
 
-Current release: [v0.10.0](https://github.com/PHUMWIWAT/audrix-relay/releases/tag/v0.10.0).
+Current release: [v0.11.1](https://github.com/PHUMWIWAT/audrix-relay/releases/tag/v0.11.1).
 
 ## Use it
 
